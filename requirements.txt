@@ -1,0 +1,7 @@
+# Python 3.11
+# 모델별 PyTorch/CUDA 의존성은 각 모델 환경에서 별도로 관리합니다.
+
+# 전처리 관련
+numpy>=1.26,<3
+opencv-python>=4.8,<5
+PyYAML>=6.0,<7
