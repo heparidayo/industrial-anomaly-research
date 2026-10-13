@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import sys
 
@@ -5,39 +6,52 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.preprocessing.variations import (
-    load_image, save_image,
+    load_image,
+    save_image,
     adjust_brightness,
+    rotate_image,
+    translate_image,
 )
 
 
 def main():
-    # 원본 이미지 경로
     input_path = (
         ROOT / "data/raw/mvtec_ad/bottle/test/good/000.png"
     )
 
-    # 저장할 폴더 경로
     output_dir = ROOT / "data/processed/bottle"
-    
 
-    # 원본 이미지 로드
+    # 1. 원본 이미지
     original = load_image(input_path)
 
-    # 밝기 변경
+    # 2. 밝기 변형
     bright = adjust_brightness(original, +20)
     dark = adjust_brightness(original, -20)
 
-    # 결과 저장
-    save_image(output_dir / "original_000.png", original)
-    save_image(output_dir / "brightness_p20_000.png", bright)
-    save_image(output_dir / "brightness_m20_000.png", dark)
+    # 3. 회전 변형
+    rotate_p5 = rotate_image(original, +5)
+    rotate_m5 = rotate_image(original, -5)
 
-    print("밝기 정상편차 이미지 생성 완료!")
-    print("원본 평균 밝기:", original.mean()) # 모든 채널 평균 픽셀값 출력
-    print("+20% 평균 밝기:", bright.mean())
-    print("-20% 평균 밝기:", dark.mean())
-    
-    print("[경로]", output_dir)
+    # 4. 위치 이동
+    move_right = translate_image(original, 6, 0)
+    move_left = translate_image(original, -6, 0)
+
+    # 5. 이미지 저장
+    images = {
+        "original_000.png": original,
+        "brightness_p20_000.png": bright,
+        "brightness_m20_000.png": dark,
+        "rotation_p5_000.png": rotate_p5,
+        "rotation_m5_000.png": rotate_m5,
+        "translation_xp6_000.png": move_right,
+        "translation_xm6_000.png": move_left,
+    }
+
+    for filename, image in images.items():
+        save_image(output_dir / filename, image)
+        print(f"[저장 완료] {filename}")
+
+    print(f"\n총 {len(images)}장 생성 완료!")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,57 @@ import cv2
 import numpy as np
 
 
+# 3. 위치 이동
+def translate_image(image, dx, dy):
+    """이미지를 x축 dx, y축 dy 픽셀만큼 이동한다."""
+
+    height, width = image.shape[:2]
+
+    # 2x3 이동 변환 행렬
+    matrix = np.float32([
+        [1, 0, dx], # x + dx
+        [0, 1, dy]  # y + dy
+    ])
+
+    result = cv2.warpAffine(
+        image,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT_101
+    )
+
+    return result
+
+# 2. 회전 
+def rotate_image(image, angle):
+    """이미지를 중심 기준으로 angle도 회전한다."""
+
+    height, width = image.shape[:2] # im 구조가 (Height, Width, Channels)
+
+    # 회전 중심 (이미지 중심점)
+    center = ((width - 1) / 2, (height - 1) / 2)
+
+    # 2x3 회전 변환 행렬 생성
+    matrix = cv2.getRotationMatrix2D(
+        center,
+        angle,
+        1.0
+    ) # 1.0은 배율 (회전만 시키기위해)
+
+    # 실제 이미지 회전
+    result = cv2.warpAffine(
+        image,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR, # 쌍선형 보간 (Bilinear Interpolation)
+        borderMode=cv2.BORDER_REFLECT_101 # 임시 경계 처리
+    )
+
+    return result
+
+
+# 1. 밝기
 def adjust_brightness(image, percent):
     """이미지의 밝기를 지정한 비율만큼 변경한다."""
 
