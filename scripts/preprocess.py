@@ -4,6 +4,7 @@ import sys
 import csv
 import shutil
 import yaml
+import argparse
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -17,15 +18,48 @@ from src.preprocessing.variations import (
 )
 
 
+
 def load_config():
-    """YAML 실험 설정 파일을 읽는다."""
+    """실행 인자로 전달받은 YAML 설정 파일을 읽는다."""
 
-    config_path = ROOT / "configs/variations_bottle.yaml"
+    parser = argparse.ArgumentParser(
+        description="산업 이상탐지 정상편차 데이터 생성"
+    )
 
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="실험 YAML 파일 경로"
+    )
+
+    args = parser.parse_args()
+
+    # 상대경로는 프로젝트 루트 기준으로 처리
+    config_path = args.config
+
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+
+    config_path = config_path.resolve()
+
+    # 파일 존재 여부 확인
+    if not config_path.is_file():
+        parser.error(
+            f"설정 파일을 찾을 수 없습니다: {config_path}"
+        )
+
+    # YAML 파일 읽기
     with open(config_path, "r", encoding="utf-8") as file:
         config = yaml.safe_load(file)
 
+    if not isinstance(config, dict):
+        parser.error("YAML 설정 내용이 올바르지 않습니다.")
+
+    print(f"[설정 파일] {config_path}")
+
     return config, config_path
+
 
 
 def make_variations(original, config):
@@ -93,6 +127,22 @@ def main():
         / category
         / experiment_name
     )
+
+    
+    # 이전 실험 설정과 충돌하는지 검사
+    # 실수로 YAML 이름 안바꾸고 데이터 덮어버리는거 대비
+    saved_config = output_dir / "config_used.yaml"
+    if saved_config.is_file():
+        with open(saved_config, "r", encoding="utf-8") as file:
+            previous_config = yaml.safe_load(file)
+
+        if previous_config != config:
+            raise SystemExit(
+                "\n[오류] 동일한 실험 이름으로 서로 다른 설정이 "
+                "사용되었습니다.\n"
+                "experiment.name을 새로운 이름으로 변경해주세요."
+            )
+
 
     if not input_dir.is_dir():
         raise SystemExit("정상 테스트 데이터 폴더가 없습니다.")

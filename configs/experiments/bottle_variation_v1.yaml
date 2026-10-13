@@ -1,0 +1,20 @@
+
+# 실험 정보
+experiment:
+  name: bottle_variation_v1
+
+# 사용할 데이터셋
+dataset:
+  root: data/raw/mvtec_ad
+  category: bottle
+
+# 생성 데이터 저장 위치
+output:
+  root: data/processed
+
+# 정상편차 실험 조건
+# 여기선 예시로 밝기+-20, 회전+-5, x축+-6
+variations:
+  brightness: [-20, 20]
+  rotation: [-5, 5]
+  translation_x: [-6, 6]
