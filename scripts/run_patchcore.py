@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.models.patchcore.backbone import PatchCoreBackbone
+from src.models.patchcore.features import PatchFeatureExtractor
 
 
 def main():
@@ -43,7 +44,26 @@ def main():
     for name, feature in features.items():
         print(f"{name}: {tuple(feature.shape)}")
 
+    
+    # Patch Feature 생성기
+    patch_extractor = PatchFeatureExtractor(
+        patch_size=3,
+        pretrain_embed_dim=1024,
+        target_embed_dim=1024,
+    ).to(device)
+
+    # Feature Map -> Patch Feature
+    with torch.inference_mode():
+        patch_features = patch_extractor(features)
+
+    print("\n[Patch Feature]")
+    print("Shape:", tuple(patch_features.shape))
+    print("Patch 개수:", patch_features.shape[1])
+    print("특징 벡터 차원:", patch_features.shape[2])
+
+
     print("\n특징 추출 완료!")
+
 
 
 if __name__ == "__main__":
