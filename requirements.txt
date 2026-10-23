@@ -1,5 +1,10 @@
 # Python 3.11
-# 모델별 PyTorch/CUDA 의존성은 각 모델 환경에서 별도로 관리합니다.
+# 현재 PatchCore 기준입니다. CPU/CUDA 설치 방법은 추후 리드미에!
+
+# PatchCore: 현재 사용 중인 호환 버전 조합
+torch==2.9.0
+torchvision==0.24.0
+Pillow>=10,<13
 
 # 전처리 관련
 numpy>=1.26,<3

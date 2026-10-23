@@ -9,7 +9,7 @@ import torch
 from PIL import Image
 from torchvision.models import Wide_ResNet50_2_Weights
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from src.models.patchcore.backbone import PatchCoreBackbone

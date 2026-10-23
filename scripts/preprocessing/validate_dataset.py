@@ -6,14 +6,14 @@ import csv
 import sys
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main():
     # 검사할 manifest를 실행 인자로 받기
     if len(sys.argv) != 2:
         raise SystemExit(
-            "사용법: python scripts/validate_dataset.py "
+            "사용법: python scripts/preprocessing/validate_dataset.py "
             "data/processed/bottle/bottle_variation_v2/manifest.csv"
         )
 

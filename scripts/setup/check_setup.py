@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 
 # 1. 프로젝트 root 경로
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 # 2. 프로젝트 필수 폴더
 DIRECTORIES = [
@@ -10,7 +10,10 @@ DIRECTORIES = [
     "data",
     "outputs",
     "experiments",
-    "scripts",
+    "scripts/preprocessing",
+    "scripts/patchcore",
+    "scripts/evaluation",
+    "scripts/setup",
     "src/preprocessing",
     "src/models",
     "src/evaluation",

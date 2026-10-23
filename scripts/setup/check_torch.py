@@ -1,4 +1,6 @@
 
+"""PyTorch와 CUDA GPU 실행 환경을 점검한다."""
+
 import torch
 import torchvision
 
