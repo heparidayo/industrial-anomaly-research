@@ -1,0 +1,21 @@
+
+# 실험 정보
+experiment:
+  name: company_cam1_variation_v1
+
+# 사용할 데이터셋
+dataset:
+  root: data/raw/mvtec_ad
+  category: company_cam1
+
+# 생성 데이터 저장 위치
+output:
+  root: data/processed
+
+# 정상편차 실험 조건
+# 회사 이미지는 1216px라 224px 입력 기준으로 약 0.19배 축소된다
+# → 이동량을 bottle(900px, ±3/6)보다 크게 잡아 224 기준 약 1.5/3/6px이 되도록 함
+variations:
+  brightness: [-5, 5, -10, 10, -20, 20]
+  rotation: [-2, 2, -5, 5, -10, 10]
+  translation_x: [-8, 8, -16, 16, -32, 32]
