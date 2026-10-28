@@ -70,6 +70,15 @@ py -3.11 -m venv .venv
 
 > 특히 모델 담당 분들은, 모델 구현에서 별도 버전이 필요하면 담당 모델의 의존성 파일과 설치 방법을 추가해주세요. 예를 들어 `requirements-draem.txt`처럼 분리할 수 있습니다. 혹시나 공용 패키지 버전을 바꿔야되는 경우 저 혹은 다른 모델 담당자 분들에게 미리 말씀주시면 좋겠습니다.
 
+- DRAEM 담당 추가 설치 (위 공용 설치 후 실행)
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-draem.txt
+.\.venv\Scripts\python.exe scripts/draem/check_draem_env.py
+```
+
+공용 패키지 버전(torch, torchvision, numpy, opencv-python)은 바꾸지 않고 `imgaug`, `tensorboard`만 추가합니다. imgaug 0.4.0은 NumPy 2.x에서 그대로 동작하지 않아 `src/models/draem/imgaug_compat.py`에서 보완했습니다. DRAEM 이외 모델 담당자는 설치하지 않아도 됩니다.
+
 ### 1-4. 로컬 폴더와 데이터 준비
 
 데이터와 결과 폴더(`./data`, `./outputs`)은 github로 전달되지 않으므로 미리 준비해둔 코드로 생성해줍니다.
