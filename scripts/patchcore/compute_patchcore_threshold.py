@@ -36,10 +36,8 @@ import torch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-# coreset 선택 함수 (build_patchcore_coreset.py와 같은 함수)
-from src.models.patchcore.coreset import approximate_greedy_coreset_indices
-# 최근접 거리 계산 함수 (실제 추론과 같은 함수)
-from src.models.patchcore.scoring import compute_patch_scores
+# 그룹별로 빼고 채점하는 계산 (src/models/patchcore/threshold.py)
+from src.models.patchcore.threshold import held_out_scores
 
 
 def main():
@@ -117,46 +115,18 @@ def main():
     print("학습 정상 이미지:", image_count)
     print("그룹 수:", folds, "(leave-one-out)" if folds == image_count else "")
 
-    # 이미지 i는 (i % folds)번 그룹 → 그룹마다 이미지가 골고루 섞인다
-    # 예) 이미지 25장, 10그룹 → 0번 그룹 = 0, 10, 20번 이미지 / 1번 그룹 = 1, 11, 21번 ...
-    fold_of = torch.arange(image_count) % folds
-    # 이미지별 held-out 점수를 채울 자리 (처음엔 비어 있음)
-    scores = [None] * image_count
     start_time = time.perf_counter()
 
-    for fold in range(folds):
-        # 이번에 뺄 이미지 번호들 / 남길 이미지 번호들
-        # nonzero(): 조건이 True인 위치 번호, flatten(): 1차원 목록으로
-        held_out = (fold_of == fold).nonzero().flatten()
-        kept = (fold_of != fold).nonzero().flatten()
-
-        # 1. 뺀 그룹을 제외한 정상 이미지로 coreset 메모리 뱅크 생성
-        # 남긴 이미지들의 patch 벡터를 다시 한 줄로 이어 붙인다 → [남긴 이미지 수 * 784, 1024]
-        kept_features = per_image[kept].reshape(-1, per_image.shape[-1])
-        # 실제 추론용 메모리 뱅크와 같은 방식(같은 비율, 투영 차원, 시드)으로 대표 벡터 선택
-        indices = approximate_greedy_coreset_indices(
-            features=kept_features,
-            percentage=args.percentage,
-            projection_dim=args.projection_dim,
-            seed=args.seed,
-            log_every=10**9,  # 진행 로그 생략
-        )
-        # 선택된 번호의 벡터만 뽑아서 GPU로 (indices가 GPU에 있을 수 있어 CPU로 맞춤)
-        memory_bank = kept_features.index_select(0, indices.cpu()).to(device)
-
-        # 2. 뺀 그룹의 이미지 채점 (이미지 점수 = patch 점수 최댓값)
-        # 실제 추론(model.py)과 똑같이 계산한다
-        for i in held_out.tolist():
-            # per_image[i]: [784, 1024] → unsqueeze(0): [1, 784, 1024] (배치 차원 추가)
-            patch_scores = compute_patch_scores(
-                per_image[i].unsqueeze(0).to(device),
-                memory_bank,
-            )
-            # 784개 patch 점수 중 가장 큰 값 = 이 이미지의 이상 점수
-            scores[i] = patch_scores.max().item()
-
-        print(f"[그룹 {fold + 1}/{folds}] 제외 {len(held_out)}장, "
-              f"메모리 뱅크 {tuple(memory_bank.shape)}")
+    # 학습 정상 이미지마다 "처음 보는 정상"일 때의 점수
+    # (그룹을 돌아가며 빼고 나머지로 coreset → 뺀 이미지 채점)
+    scores = held_out_scores(
+        per_image,
+        folds=folds,
+        percentage=args.percentage,
+        projection_dim=args.projection_dim,
+        seed=args.seed,
+        device=device,
+    )
 
     elapsed = time.perf_counter() - start_time
     # 통계 계산을 위해 텐서로 변환
