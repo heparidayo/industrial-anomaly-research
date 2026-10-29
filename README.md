@@ -203,6 +203,92 @@ configs/experiments/bottle_variation_v2.yaml
 
 #### 2-3-1. 예시 모델 아키텍처
 #### 2-3-2. PatchCore 아키텍처
+
+PatchCore는 신경망을 새로 학습하지 않습니다. ImageNet으로 학습된 CNN에서 정상 이미지의 patch 특징을 뽑아 메모리 뱅크에 저장하고, 테스트 patch가 가장 가까운 정상 patch와 얼마나 먼지를 이상 점수로 사용합니다. 그래서 정상 데이터가 얼마나 다양한 모습을 담고 있는지가 성능을 좌우합니다.
+
+| 항목 | 설정 | 코드 |
+|---|---|---|
+| Backbone | WideResNet50 (ImageNet `IMAGENET1K_V2`), `layer2` + `layer3` | `backbone.py` |
+| 입력 전처리 | resize 232 → center crop 224, ImageNet 정규화 | `weights.transforms()` |
+| Patch 특징 | 3x3 주변 묶음, layer3를 28x28로 맞춰 합친 뒤 1024차원, 이미지당 784개 | `features.py` |
+| 메모리 뱅크 | 학습 정상(`train/good`) 전체 patch 특징 | `memory_bank.py` |
+| Coreset | approximate greedy, 기본 1%, 128차원 투영, seed 0 | `coreset.py` |
+| 이상 점수 | patch별 최근접 정상 patch까지 L2 거리, 이미지 점수 = 최댓값 | `scoring.py` |
+| Anomaly map | 28x28 점수 → 224 업샘플 + Gaussian(σ=4) | `anomaly_map.py` |
+| Threshold | 학습 정상을 그룹으로 나눠 돌아가며 빼고 채점한 점수의 최댓값 (테스트 정답 미사용) | `threshold.py` |
+
+```mermaid
+flowchart TB
+    TRAIN["train/good PNG"] --> FEAT["backbone.py + features.py<br/>patch 특징 784 x 1024"]
+    FEAT --> RAW["build_patchcore_memory.py<br/>raw_memory_full.pt"]
+    RAW --> CORE["build_patchcore_coreset.py<br/>coreset_*.pt"]
+    RAW --> THR["compute_patchcore_threshold.py<br/>threshold_*.json"]
+    TEST["test/*/PNG"] --> BATCH["run_patchcore_batch.py"]
+    VAR["data/processed manifest.csv"] --> VARINF["run_patchcore_variation.py"]
+    CORE --> BATCH
+    CORE --> VARINF
+    BATCH --> CSV["예측 CSV"]
+    VARINF --> CSV
+    CSV --> AUROC["evaluate_predictions.py<br/>AUROC, 추론시간"]
+    CSV --> FPR["evaluate_patchcore_threshold.py<br/>과검률, 미검률, F1"]
+    THR --> FPR
+```
+
+실행 순서입니다. `<category>`는 `data/raw/mvtec_ad/` 아래 폴더 이름입니다 (예: `bottle`, `company_cam1`).
+
+```powershell
+# 1. 정상 특징 수집 → coreset
+.\.venv\Scripts\python.exe scripts/patchcore/build_patchcore_memory.py --category <category>
+.\.venv\Scripts\python.exe scripts/patchcore/build_patchcore_coreset.py --input outputs/patchcore/<category>/raw_memory_full.pt --percentage 0.01
+
+# 2. 테스트셋 추론 → AUROC, 추론시간
+.\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_batch.py --category <category> --memory outputs/patchcore/<category>/coreset_raw_memory_full_1pct_d128_s0.pt
+.\.venv\Scripts\python.exe scripts/evaluation/evaluate_predictions.py --csv outputs/predictions/patchcore/<category>_original.csv
+
+# 3. threshold → 과검률, 미검률, F1
+.\.venv\Scripts\python.exe scripts/patchcore/compute_patchcore_threshold.py --category <category>
+.\.venv\Scripts\python.exe scripts/patchcore/evaluate_patchcore_threshold.py --csv outputs/predictions/patchcore/<category>_original.csv --threshold outputs/patchcore/<category>/threshold_1pct_d128_s0_k10.json
+
+# 4. 정상편차 이미지 추론 (preprocess.py로 만든 manifest 사용)
+.\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_variation.py --manifest data/processed/<category>/<실험이름>/manifest.csv --memory outputs/patchcore/<category>/coreset_raw_memory_full_1pct_d128_s0.pt
+.\.venv\Scripts\python.exe scripts/patchcore/evaluate_patchcore_threshold.py --csv outputs/predictions/patchcore/<category>_<실험이름>.csv --threshold outputs/patchcore/<category>/threshold_1pct_d128_s0_k10.json --defects-csv outputs/predictions/patchcore/<category>_original.csv
+
+# (선택) 여러 카테고리 × coreset 비율 일괄 실행 → outputs/patchcore/summary/<요약이름>.csv(계산용) + .md(보기용 표)
+.\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_experiment.py --name <요약이름> --categories <category> ... --pcts 0.01 0.1 0.25
+
+# (선택) 결과 그래프 — 추가 의존성: pip install -r requirements-patchcore.txt
+.\.venv\Scripts\python.exe scripts/patchcore/plot_patchcore_results.py
+```
+
+입출력 규칙입니다.
+
+- 예측 CSV 컬럼: `image_id, label(0 정상/1 불량), defect_type, variation, level, anomaly_score, inference_ms`. 정상편차 CSV도 같은 형식입니다.
+- 결과 파일명에 설정이 들어갑니다 (예: `coreset_raw_memory_full_1pct_d128_s0.pt`, `threshold_1pct_d128_s0_k10.json`). 모든 스크립트는 기존 결과를 덮어쓰지 않고 멈추므로, 설정을 바꿔 다시 돌릴 때는 `--output`으로 다른 이름을 주세요.
+- threshold는 실제 추론에 쓰는 coreset과 같은 비율·투영 차원·seed로 계산해야 합니다.
+- 과검률/미검률/F1 계산 함수(`src/evaluation/threshold_metrics.py`)는 예측 CSV만 있으면 되므로 DRAEM, EfficientAD 결과에도 그대로 쓸 수 있습니다. 모델 간 비교를 위해 같은 threshold 규칙(학습 정상 held-out 최댓값)을 쓰는 것을 제안합니다.
+- 불량이 정상보다 훨씬 많은 데이터에서는 "전부 불량" 판정에서도 F1이 높게 나옵니다. F1은 과검률·미검률과 함께 보고해 주세요.
+
+산업체 데이터 적용 방법입니다.
+
+원본은 `data/raw/company/`에 그대로 두고(수정 금지), 아래 스크립트로 MVTec 형식 카테고리를 만들어 위 명령을 그대로 사용합니다. 카테고리는 3-1의 기준대로 카메라 1, 카메라 2, 카메라 1+2 세 가지입니다.
+
+```powershell
+# company_cam1 / company_cam2 / company_cam12 생성 (카메라별 정상 10장 학습, 나머지 테스트, seed 0)
+.\.venv\Scripts\python.exe scripts/preprocessing/prepare_company_dataset.py
+
+# 부품 영역만 자른 버전 (company_*_roi), 다른 분할 (company_*_s1 ...)
+.\.venv\Scripts\python.exe scripts/preprocessing/prepare_company_dataset.py --roi
+.\.venv\Scripts\python.exe scripts/preprocessing/prepare_company_dataset.py --seed 1
+
+# 부품만 회전한 정상편차 (이미지 전체 회전은 모서리 인공물로 과검이 과장될 수 있음)
+.\.venv\Scripts\python.exe scripts/preprocessing/preprocess_part_rotation.py --config configs/experiments/company_cam1_roi_partrot_v1.yaml
+.\.venv\Scripts\python.exe scripts/preprocessing/validate_dataset.py data/processed/company_cam1_roi/company_cam1_roi_partrot_v1/manifest.csv
+```
+
+- 각 카테고리의 `split.csv`에 어떤 이미지가 학습/테스트인지 기록됩니다. 다른 모델도 같은 `split.csv`를 쓰면 같은 조건으로 비교할 수 있습니다.
+- ROI는 라벨의 기준 원(class 1) 위치로 카메라별 고정 박스 하나를 정해 자릅니다 (`dataset_info.json`에 기록). 이미지마다 라벨로 자르지 않습니다.
+- 라벨은 결함 마스크가 아니라 부품 윤곽선이므로 pixel 단위 평가는 하지 않고, 이미지 단위(폴더 이름 = 정답)로 평가합니다.
+- 회사 데이터, 결과 이미지, 결과 수치는 `data/`, `outputs/`에만 두고 저장소에 올리지 않습니다.
 #### 2-3-3. AfficientAD 아키텍처
 #### 2-3-4. DRAEM 아키텍처
 
