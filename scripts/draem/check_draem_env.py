@@ -29,7 +29,7 @@ from src.models.draem.imgaug_compat import Autocontrast, ia, iaa  # noqa: E402
 
 print(f"imgaug      {ia.__version__}")
 
-# DRAEM 원본 data_loader.py의 augmenter 목록
+# DRAEM 원본 data_loader.py의 augmenter(이미지 변환기) 목록
 augmenters = [
     iaa.GammaContrast((0.5, 2.0), per_channel=True),
     iaa.MultiplyAndAddToBrightness(mul=(0.8, 1.2), add=(-30, 30)),

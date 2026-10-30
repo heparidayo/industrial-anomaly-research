@@ -24,6 +24,9 @@ if not hasattr(np, "sctypes"):
         "complex": [np.complex64, np.complex128],
         "others": [bool, object, bytes, str, np.void],
     }
+# np.sctypes는 Numpy 2.x에서 제거되었는데 imgaug는 import될 때 이 값을 읽어 어떤 자료형이 정수/실수인지 목록을 만듬.
+# if not hasattr(...): NumPy에 이미 있으면 건드리지 않습니다. NumPy 1.x 환경에서도 안전
+# np.object, np.int 같은 예전 이름을 예방 차원에서 채웁니다. NumPy 2에서는 이 이름을 확인하는 것만으로도 경고가 떠서, 확인하는 구간만 경고를 숨김.
 
 # NumPy 1.24+에서 제거된 내장형 별칭 (imgaug 내부 일부 경로에서 참조)
 # hasattr 검사 자체가 NumPy 2.x에서 FutureWarning을 내므로 경고를 숨깁니다.
@@ -46,11 +49,11 @@ def _autocontrast_images(images, random_state, parents, hooks):
         pil = Image.fromarray(np.ascontiguousarray(image))
         result.append(np.asarray(ImageOps.autocontrast(pil, cutoff=int(cutoff))))
     return result
-
+# PIL 원래 함수를 직접 호출
 
 def Autocontrast():  # noqa: N802  (imgaug augmenter처럼 쓰도록 대문자 이름)
     """iaa.pillike.Autocontrast(cutoff=(0, 20)) 대체."""
     return iaa.Lambda(func_images=_autocontrast_images, name="Autocontrast")
-
+# 위 함수를 ingaug 변환 형태로 감싸서 원래 쓰던 자리에 그대로 넣을 수 있게 함
 
 __all__ = ["ia", "iaa", "Autocontrast"]
