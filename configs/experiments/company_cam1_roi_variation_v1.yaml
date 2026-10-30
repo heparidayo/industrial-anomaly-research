@@ -1,0 +1,13 @@
+# ROI(840px) 데이터용 정상편차 설정 (prepare_company_dataset.py --roi 로 만든 카테고리)
+# 840px → 224 기준 약 0.27배 → 이동 ±6/11/22px ≈ 224 기준 1.6/3/6px
+experiment:
+  name: company_cam1_roi_variation_v1
+dataset:
+  root: data/raw/mvtec_ad
+  category: company_cam1_roi
+output:
+  root: data/processed
+variations:
+  brightness: [-5, 5, -10, 10, -20, 20]
+  rotation: [-2, 2, -5, 5, -10, 10]
+  translation_x: [-6, 6, -11, 11, -22, 22]
