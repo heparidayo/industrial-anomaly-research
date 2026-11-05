@@ -204,6 +204,8 @@ configs/experiments/bottle_variation_v2.yaml
 
 *TODO 아래 작성 필요*
 
+산업체 데이터의 공통 분할·ROI·부품 영역 회전은 [산업체 데이터 전처리 안내](src/preprocessing/company/README.md)를 참고하세요. 현재 설정은 팀 검토 전 제안값입니다.
+
 ### 2-3. 모델 아키텍처
 
 모델 내부 구조와 학습 방식은 담당자가 사용하는 구현에 따라 달라집니다. 각 모델의 상세 아키텍처는 담당자가 자신의 실제 코드 기준으로 설명하고 이 문서에 추가해 주세요.
@@ -212,6 +214,9 @@ configs/experiments/bottle_variation_v2.yaml
 
 #### 2-3-1. 예시 모델 아키텍처
 #### 2-3-2. PatchCore 아키텍처
+
+현재 공용 PatchCore는 자체 구현 프로토타입입니다. 실행 방법과 상세 구조는 [PatchCore 실험 안내](src/models/patchcore/README.md)를 참고하세요.
+
 #### 2-3-3. AfficientAD 아키텍처
 #### 2-3-4. DRAEM 아키텍처
 
