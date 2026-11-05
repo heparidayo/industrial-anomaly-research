@@ -20,4 +20,24 @@ ROI 보정은 학습 정상 라벨만 사용하고 테스트 이미지에는 고
 회전 원 라벨은 합성 이미지 생성에만 사용합니다.
 
 실행 예시는 [PatchCore 실험 안내](../../models/patchcore/README.md)의 공통 데이터 준비 절을 참고하세요.
+
+## 스프링 시작점 정렬 (제안)
+
+스프링 끝면은 선재 시작점(연마되지 않은 어두운 부채꼴)의 위치가 부품마다 달라, 모델이 이 위치 차이를 불량으로 오해할 수 있습니다.
+기업 검사 기준(시작점 0° 기준 -5°~100° 검사 제외)에 맞춰, 시작점을 같은 방향으로 돌리고 제외 영역과 부품 바깥을 가린 카테고리를 만듭니다.
+
+- 구현: alignment.py (중심·시작점 검출, 정렬·마스킹), prepare_aligned.py (카테고리 단위 내보내기)
+- 실행: scripts/preprocessing/company/align_dataset.py
+- 설정: configs/datasets/company_align_v1.yaml (status: proposed)
+- 입력: prepare_dataset.py로 만든 원본 크기 카테고리 (ROI 카테고리는 받지 않음)
+- 출력: data/processed/company/<category>_aligned/ (split.csv는 입력과 동일, alignment.csv에 이미지별 검출 결과)
+
+```powershell
+.\.venv\Scripts\python.exe scripts/preprocessing/company/align_dataset.py --config configs/datasets/company_align_v1.yaml
+```
+
+라벨은 카메라별 대략 중심·반지름을 학습 정상 이미지로만 정할 때 사용하고, 각 이미지의 중심과 시작점은 사진에서 찾습니다.
+중심은 가운데 구멍 경계 → 하얀 연마면 바깥 경계 순서로 원을 맞추고, 시작점은 연마면 띠의 밝기가 "어두움 → 밝음"으로 가장 크게 바뀌는 각도입니다.
+회사 데이터 97장에서 라벨 외곽선 기준과 비교한 시작점 각도 차이는 중앙값 약 0.5°, 최대 약 4.5°입니다.
+조명이나 부품이 바뀌면 alignment.csv의 start_rise(밝기 상승폭)와 low_confidence를 먼저 확인하세요.
 원래 bottle용 preprocess.py·validate_dataset.py와 src/preprocessing/variations.py는 유지합니다.
