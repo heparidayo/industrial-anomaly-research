@@ -1,10 +1,14 @@
 
+
+
 from pathlib import Path
 import argparse
+import json
 import sys
 import time
 
 import torch
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -12,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 from src.models.patchcore.coreset import (
     approximate_greedy_coreset_indices,
 )
+from src.models.patchcore.artifacts import file_sha256
 
 
 def main():
@@ -19,17 +24,23 @@ def main():
         description="PatchCore Coreset 생성"
     )
 
+
     parser.add_argument("--input", type=Path, required=True)
+
     parser.add_argument("--percentage", type=float, default=0.01)
+
     parser.add_argument("--projection-dim", type=int, default=128)
+
     parser.add_argument("--seed", type=int, default=0)
 
     args = parser.parse_args()
 
     input_path = args.input
 
+
     if not input_path.is_absolute():
         input_path = ROOT / input_path
+
 
     input_path = input_path.resolve()
 
@@ -37,6 +48,8 @@ def main():
         parser.error(f"입력 파일이 없습니다: {input_path}")
 
     # 비율과 설정을 파일명에 기록
+
+
     ratio_name = f"{args.percentage * 100:g}pct".replace(".", "p")
 
     output_path = input_path.parent / (
@@ -44,15 +57,18 @@ def main():
         f"_d{args.projection_dim}_s{args.seed}.pt"
     )
 
+
     if output_path.exists():
         raise SystemExit(f"이미 결과가 존재합니다: {output_path}")
 
     # 1. 이전 단계에서 저장한 정상 특징 읽기
+
     data = torch.load(
         input_path,
         map_location="cpu",
         weights_only=True,
     )
+
 
     features = data["embeddings"]
 
@@ -63,7 +79,10 @@ def main():
     print("Random Seed:", args.seed)
 
     # 2. 대표 특징 인덱스 선택
+
+
     start_time = time.perf_counter()
+
 
     indices = approximate_greedy_coreset_indices(
         features=features,
@@ -74,14 +93,16 @@ def main():
 
     elapsed = time.perf_counter() - start_time
 
-    # 3. 원본 1024차원 특징을 선택 
+
     memory_bank = features.index_select(0, indices)
 
     # 선택 인덱스 중복 여부 확인
+
     if torch.unique(indices).numel() != len(indices):
         raise RuntimeError("Coreset 인덱스가 중복되었습니다.")
 
     # 4. 결과 저장
+
     torch.save({
         "embeddings": memory_bank,
         "selected_indices": indices,
@@ -93,7 +114,13 @@ def main():
         "category": data["category"],
         "backbone": data["backbone"],
         "image_count": data["image_count"],
+        "raw_memory_sha256": file_sha256(input_path),
     }, output_path)
+    output_path.with_suffix(output_path.suffix + ".meta.json").write_text(json.dumps({
+        "category": data["category"], "percentage": args.percentage,
+        "projection_dim": args.projection_dim, "seed": args.seed,
+        "raw_memory_sha256": file_sha256(input_path),
+    }, indent=2), encoding="utf-8")
 
     print("\n=== Coreset 생성 완료 ===")
     print("원본 개수:", len(features))
