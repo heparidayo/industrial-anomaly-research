@@ -64,3 +64,12 @@ def evaluate_image_predictions(records):
         "median_inference_ms": median(times),
         "groups": group_results,
     }
+
+
+def image_auroc_by_defect(records):
+    """같은 정상 이미지와 각 결함 종류를 비교한 AUROC."""
+    result = {}
+    for defect_type in sorted({row["defect_type"] for row in records} - {"good"}):
+        subset = [row for row in records if row["defect_type"] in {"good", defect_type}]
+        result[defect_type] = evaluate_image_predictions(subset)["image_auroc"]
+    return result
