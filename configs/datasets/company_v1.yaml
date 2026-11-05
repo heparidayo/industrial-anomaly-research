@@ -1,0 +1,14 @@
+# 연결 검증용 제안값. 팀 공통 분할은 담당자 검토 후 확정합니다.
+status: proposed
+dataset:
+  root: data/raw/company
+output:
+  root: data/processed/company
+  prefix: company
+split:
+  seed: 0
+  n_train_per_camera: 10
+  n_validation_per_camera: 3
+roi:
+  half_size: 420
+  reference_image_size: 1216
