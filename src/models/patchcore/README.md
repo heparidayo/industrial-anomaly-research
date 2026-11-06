@@ -115,6 +115,15 @@ ROI 박스가 이미지 밖으로 나가거나 필요한 라벨이 없으면 중
 .\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_experiment.py --name company_test_v1 --categories company_cam1 company_cam2 company_cam12 --data-root data/processed/company --split test --pcts 0.01
 ```
 
+### 시작점 정렬 카테고리 (제안)
+
+align_dataset.py로 만든 `<category>_aligned`도 같은 명령으로 실행합니다. 분할(split.csv)이 원본 카테고리와 같아 정렬 전후를 그대로 비교할 수 있습니다.
+만드는 방법은 [산업체 데이터 전처리 안내](../../preprocessing/company/README.md)의 "스프링 시작점 정렬"을 참고하세요.
+
+```powershell
+.\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_experiment.py --name company_aligned_validation_v1 --categories company_cam1_aligned company_cam2_aligned company_cam12_aligned --data-root data/processed/company --split validation --pcts 0.01
+```
+
 ## 정상편차 생성과 추론
 
 configs/experiments/company/의 YAML은 **모델 공통 편차 조건의 초안**입니다.
