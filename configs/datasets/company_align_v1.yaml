@@ -1,0 +1,25 @@
+# 스프링 시작점 정렬 + 검사 제외 영역 마스킹 설정 (제안값, 팀 검토 전)
+# 실행: python scripts/preprocessing/company/align_dataset.py --config configs/datasets/company_align_v1.yaml
+status: proposed
+
+# 입력: prepare_dataset.py로 만든 원본 크기 카테고리 (ROI 카테고리는 받지 않음)
+source:
+  root: data/processed/company
+  categories: [company_cam1, company_cam2, company_cam12]
+
+# 출력: 같은 폴더에 <카테고리><suffix> 로 생성 (예: company_cam1_aligned)
+output:
+  suffix: _aligned
+
+alignment:
+  # 정렬 후 시작점이 올 방향 (도). -90 = 12시 방향 (이미지 좌표: 0=3시, 90=6시)
+  target_deg: -90
+  # 시작점 기준 가릴 각도 범위 (도). 기업 검사 제외 영역 -5°~100°.
+  # 연마되지 않은 어두운 구간 쪽이 음수 방향이라 [-100, 5]로 쓴다.
+  exclusion_deg: [-100, 5]
+  # 부품 외곽선 반지름의 몇 배 바깥부터 가릴지 (배경·받침대 제거)
+  outer_margin: 1.03
+  # 출력 정사각형 한 변 = 2 × 반지름 × crop_scale (반지름 약 358px → 약 773px)
+  crop_scale: 1.08
+  # 가린 부분 색 (0 = 검정). 모든 이미지에서 같아야 PatchCore가 차이로 보지 않는다
+  fill_value: 0
