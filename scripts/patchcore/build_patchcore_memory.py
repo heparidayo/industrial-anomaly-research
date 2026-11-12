@@ -19,6 +19,9 @@ from src.models.patchcore.backbone import PatchCoreBackbone
 from src.models.patchcore.features import PatchFeatureExtractor
 from src.models.patchcore.memory_bank import collect_normal_features
 from src.models.patchcore.artifacts import image_group_id, input_fingerprint, train_samples
+from src.models.patchcore.transforms import (  # 입력 변환 (학습·평가 공통)
+    DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE, INPUT_MODES, check_input_options, make_transform,
+)
 
 
 def main():
@@ -32,8 +35,16 @@ def main():
 
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--data-root", type=Path, default=Path("data/raw/mvtec_ad"))
+    # 입력 방식: center_crop(기본, 가운데 224 자르기) / full(자르지 않음, 긴 띠용)
+    parser.add_argument("--input-mode", choices=INPUT_MODES, default=DEFAULT_INPUT_MODE)
+    # full 방식의 크기 배율 (1.0 = 원본 크기 그대로)
+    parser.add_argument("--input-scale", type=float, default=DEFAULT_INPUT_SCALE)
 
     args = parser.parse_args()
+    try:
+        check_input_options(args.input_mode, args.input_scale)  # 잘못된 조합이면 바로 중단
+    except ValueError as error:
+        parser.error(str(error))
 
     # 1. 정상 학습 이미지
 
@@ -64,7 +75,9 @@ def main():
 
 
     weights = Wide_ResNet50_2_Weights.DEFAULT
-    transform = weights.transforms()
+    # 입력 변환: 기본은 기존과 같은 weights.transforms(), full이면 자르지 않는 변환
+    transform = make_transform(args.input_mode, args.input_scale)
+    print("입력 방식:", args.input_mode, "배율:", args.input_scale)
 
 
     backbone = PatchCoreBackbone(device)
@@ -125,6 +138,9 @@ def main():
         "image_group_ids": [group_ids[p.name] for p in image_paths],
         "input_fingerprint": input_fingerprint(train_samples(image_paths)),
         "data_root": str(data_root.resolve()),
+        # 평가 때 같은 변환을 쓰도록 학습 입력 방식을 함께 기록 (coreset → 추론기로 전달됨)
+        "input_mode": args.input_mode,
+        "input_scale": args.input_scale,
     }
 
 
