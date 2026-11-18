@@ -3,7 +3,8 @@
 # 목적: 띠 양 끝(시작점 바로 뒤 / 연마 안 된 구간 바로 앞)의 시작점 오차 잡음을 빼고 비교
 # 주의: 5°~10°, 255°~260°는 검사하지 않음 (기업 검사 범위보다 10° 좁음)
 # 실행: python scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polar_trim_v1.yaml
-status: proposed
+# 결과(2026-11-18): 검증셋에서 개선이 없어 채택 안 함 → 기존 5°~260° 설정 유지. 기록·재현용으로 남김
+status: rejected
 
 source:
   root: data/processed/company

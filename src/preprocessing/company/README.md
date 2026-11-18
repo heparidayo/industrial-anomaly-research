@@ -68,4 +68,6 @@ ROI 보정은 학습 정상 라벨만 사용하고 테스트 이미지에는 고
 ```powershell
 .\.venv\Scripts\python.exe scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polarstrip_v1.yaml
 ```
+각도를 10°~255°로 줄인 비교용 설정(`company_polar_trim_v1.yaml`, `company_polarstrip_trim_v1.yaml`)도 있지만, 검증 결과 개선이 없어 채택하지 않았습니다(status: rejected). 기본은 5°~260° 토막 쌓기(`company_polar_v1.yaml`)입니다.
+
 원래 bottle용 preprocess.py·validate_dataset.py와 src/preprocessing/variations.py는 유지합니다.

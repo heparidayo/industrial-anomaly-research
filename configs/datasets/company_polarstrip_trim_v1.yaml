@@ -2,7 +2,8 @@
 # company_polarstrip_v1.yaml과 같고 angle_range만 5°~260° → 10°~255°로 양쪽 5°씩 줄임
 # PatchCore를 --input-mode full 로 실행해야 띠가 잘리지 않는다
 # 실행: python scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polarstrip_trim_v1.yaml
-status: proposed
+# 결과(2026-11-18): 검증셋에서 개선이 없어 채택 안 함 → 기존 5°~260° 설정 유지. 기록·재현용으로 남김
+status: rejected
 
 source:
   root: data/processed/company
