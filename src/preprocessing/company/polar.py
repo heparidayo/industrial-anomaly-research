@@ -19,7 +19,7 @@
 import cv2
 import numpy as np
 
-from .alignment import find_part_center, find_spring_start
+from .alignment import find_part, find_spring_start
 
 
 def unwrap_band(image, center, start_deg, radius, *, inner=0.75, outer=1.05,
@@ -74,20 +74,21 @@ def square_columns(radial_px, rows):
 
 
 def unwrap_image(image, approx_center, approx_radius, *, rows=4, radial_px=108, columns=None,
-                 **band_options):
+                 center_search="calibrated", radius_from="camera", **band_options):
     """중심·시작점 찾기 → 띠 펼치기 → 토막 내어 쌓기를 한 번에. 검출 정보도 반환한다.
 
     columns=None : 쌓은 결과가 정사각형이 되도록 가로 칸 수를 자동 계산 (PatchCore 기본 입력용)
     columns=숫자 : 그 가로 칸 수로 펼친다. rows=1과 함께 쓰면 긴 띠를 쌓지 않고 그대로 저장
                    (PatchCore를 input_mode="full"로 실행해 띠 전체를 자르지 않고 볼 때)
     """
-    center = find_part_center(image, approx_center, approx_radius)            # 1) 부품 중심
-    start_deg, rise = find_spring_start(image, center, approx_radius)         # 1) 시작점 각도
+    center, radius, extra = find_part(image, approx_center, approx_radius,    # 1) 부품 중심·반지름
+                                      center_search=center_search, radius_from=radius_from)
+    start_deg, rise = find_spring_start(image, center, radius)                # 1) 시작점 각도
     if columns is None:                                                       # 가로 칸 수를 안 정했으면
         columns = square_columns(radial_px, rows)                             # 정사각형이 되는 값 사용
-    strip = unwrap_band(image, center, start_deg, approx_radius,
+    strip = unwrap_band(image, center, start_deg, radius,
                         radial_px=radial_px, columns=columns, **band_options)  # 2) 띠로 펼치기
     stacked = stack_rows(strip, rows)                                         # 3) 토막 내어 쌓기
     info = {"center_x": float(center[0]), "center_y": float(center[1]),      # 검출 결과 기록용
-            "start_deg": start_deg, "start_rise": rise}
+            "start_deg": start_deg, "start_rise": rise, **extra}
     return stacked, info

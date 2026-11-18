@@ -103,6 +103,39 @@ def _edge_points(gray, center, r_min, r_max, direction, n_angles=180):
 
 
 # ---------------------------------------------------------------- 1) 원 중심 찾기
+def locate_part_coarse(image, approx_radius, *, scale_range=(0.8, 1.2), n_scales=9, work_px=304):
+    """대략 중심 없이 이미지 전체에서 부품 위치를 찾는다 (촬영 위치가 바뀐 데이터용).
+
+    부품 끝면 = "어두운 가운데 구멍(반지름 0~0.35배) + 하얀 연마면 띠(0.55~0.8배)
+                + 바깥 원 바로 밖의 어두운 테(1.0~1.15배, 뒤쪽 원통·지그)".
+    이 모양의 고리 틀(띠는 +, 구멍·바깥 테는 −)을 이미지 전체에 대 보고 점수가 가장 높은 곳을 고른다.
+    바깥 테가 없으면 표면이 거친(회색) 부품에서 "흰 배경 + 어두운 원통 그림자"를 부품으로 착각함 (10-26 cam2 8장)
+    반환: (대략 중심 [x, y], 대략 반지름, 점수). 점수 = 띠 평균 − (구멍 평균 + 바깥 테 평균) / 2 (0~255)
+    """
+    gray = _to_gray(image)
+    factor = work_px / max(gray.shape)                                   # 계산을 빠르게 하려고 축소
+    small = cv2.resize(gray, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA)
+    best = (-np.inf, None, None)                                         # (점수, 중심, 반지름)
+    for s in np.linspace(*scale_range, n_scales):                        # 부품 크기가 달라도 찾도록 여러 크기
+        r = approx_radius * s * factor                                   # 축소 이미지에서의 반지름
+        size = int(np.ceil(1.15 * r))                                    # 틀의 반 크기 (바깥 테까지)
+        ys, xs = np.mgrid[-size:size + 1, -size:size + 1]
+        d = np.hypot(xs, ys) / r                                         # 틀 각 칸의 반지름 비율
+        ring = ((d >= 0.55) & (d <= 0.8)).astype(np.float32)             # 하얀 연마면 자리
+        hole = (d <= 0.35).astype(np.float32)                            # 어두운 구멍 자리
+        outer = ((d >= 1.0) & (d <= 1.15)).astype(np.float32)            # 바깥 어두운 테 자리
+        kernel = ring / ring.sum() - 0.5 * hole / hole.sum() - 0.5 * outer / outer.sum()
+        # 틀이 이미지 밖으로 나가면 가장자리 밝기를 거울처럼 이어 붙여 계산 (바깥 테가 커서 막지 않음)
+        score = cv2.filter2D(small, cv2.CV_32F, kernel, borderType=cv2.BORDER_REFLECT)
+        edge = int(np.ceil(0.8 * r))                                     # 연마면 띠까지는 이미지 안에 있어야 함
+        score[:edge, :] = score[-edge:, :] = -np.inf
+        score[:, :edge] = score[:, -edge:] = -np.inf
+        y, x = np.unravel_index(np.argmax(score), score.shape)           # 이 크기에서 가장 높은 곳
+        if score[y, x] > best[0]:
+            best = (float(score[y, x]), np.array([x, y], float) / factor, approx_radius * s)
+    return best[1], best[2], best[0]
+
+
 def find_part_center(image, approx_center, approx_radius):
     """사진에서 부품 원의 중심을 찾는다 (두 단계).
 
@@ -210,11 +243,50 @@ def align_and_mask(image, center, start_deg, radius, *, target_deg=-90.0,
     return aligned
 
 
-def align_image(image, approx_center, approx_radius, **align_options):
+def find_part(image, approx_center, approx_radius, *, center_search="calibrated", radius_from="camera"):
+    """중심과 반지름을 찾는다. 기본값은 예전 방식과 똑같다 (기존 결과 재현용).
+
+    center_search="calibrated": 카메라 대략 중심에서 출발 (09-29 촬영처럼 부품 위치가 일정할 때)
+    center_search="global"    : 이미지 전체에서 부품을 먼저 찾고 출발 (촬영 위치가 바뀐 데이터용)
+    radius_from="camera"      : 카메라 대략 반지름을 그대로 사용
+    radius_from="hole"        : 가운데 구멍 반지름 × HOLE_TO_OUTER (배율이 바뀐 데이터용)
+                                구멍은 면취 불량과 상관없어서 불량 정보(면취 폭)를 지우지 않는다
+    반환: (중심, 반지름, 기록용 정보 dict)
+    """
+    info = {}
+    start = approx_center                                                  # 정밀 맞춤 출발점
+    if center_search == "global":
+        start, coarse_radius, score = locate_part_coarse(image, approx_radius)
+        info.update(coarse_score=round(score, 1), coarse_radius=round(coarse_radius, 1))
+    elif center_search != "calibrated":
+        raise ValueError(f"center_search는 calibrated 또는 global: {center_search}")
+    center = find_part_center(image, start, approx_radius)                 # 기존 2단계 정밀 맞춤
+    radius = approx_radius
+    if radius_from == "hole":
+        _, hole_radius = _robust_fit_circle(                               # 구멍 경계(어두움→밝음)로 원 맞춤
+            _edge_points(_to_gray(image), center, 0.25 * approx_radius, 0.6 * approx_radius, +1))
+        radius = HOLE_TO_OUTER * hole_radius                               # 바깥 원 반지름 추정
+        # 구멍 맞춤이 틀어지면 반지름이 크게 어긋남 → 대략 크기와 15% 넘게 다르면 의심 표시
+        reference = info.get("coarse_radius", approx_radius)
+        info["radius_suspect"] = bool(abs(radius / reference - 1) > 0.15)
+    elif radius_from != "camera":
+        raise ValueError(f"radius_from은 camera 또는 hole: {radius_from}")
+    info["radius"] = round(float(radius), 1)
+    return center, radius, info
+
+
+# 바깥 원(라벨 class 1) 반지름 / 가운데 구멍 반지름
+# 09-29 라벨 97장 측정 (2026-11-18): 평균 2.027, 표준편차 0.020, 추정 오차 중앙값 2.2px·최대 10px
+HOLE_TO_OUTER = 2.027
+
+
+def align_image(image, approx_center, approx_radius, *, center_search="calibrated",
+                radius_from="camera", **align_options):
     """1) 중심 → 2) 시작점 → 3) 정렬·가리기를 한 번에. 검출 정보도 함께 반환한다."""
-    center = find_part_center(image, approx_center, approx_radius)
-    start_deg, rise = find_spring_start(image, center, approx_radius)
-    aligned = align_and_mask(image, center, start_deg, approx_radius, **align_options)
+    center, radius, extra = find_part(image, approx_center, approx_radius,
+                                      center_search=center_search, radius_from=radius_from)
+    start_deg, rise = find_spring_start(image, center, radius)
+    aligned = align_and_mask(image, center, start_deg, radius, **align_options)
     info = {"center_x": float(center[0]), "center_y": float(center[1]),
-            "start_deg": start_deg, "start_rise": rise}
+            "start_deg": start_deg, "start_rise": rise, **extra}
     return aligned, info

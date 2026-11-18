@@ -70,4 +70,15 @@ ROI 보정은 학습 정상 라벨만 사용하고 테스트 이미지에는 고
 ```
 각도를 10°~255°로 줄인 비교용 설정(`company_polar_trim_v1.yaml`, `company_polarstrip_trim_v1.yaml`)도 있지만, 검증 결과 개선이 없어 채택하지 않았습니다(status: rejected). 기본은 5°~260° 토막 쌓기(`company_polar_v1.yaml`)입니다.
 
+### 촬영 위치·배율이 바뀐 데이터 (정상 추가분, 2026-11)
+
+10월 촬영분은 부품 위치와 배율이 09-29 촬영과 달라, 카메라 평균 중심에서 출발하면 중심이 틀어집니다.
+펼치기 설정의 `polar`에 아래 두 값을 넣으면 이미지마다 중심·반지름을 찾습니다. 넣지 않으면 예전 방식 그대로입니다.
+
+- `center_search: global`: 이미지 전체에서 부품(구멍 어둡고, 연마면 밝고, 바깥 테 어두운 고리)을 먼저 찾은 뒤 기존 방식으로 정밀하게 맞춥니다.
+- `radius_from: hole`: 반지름 = 가운데 구멍 반지름 × 2.027. 구멍은 면취 불량과 상관없어서 면취 폭 정보를 지우지 않습니다.
+
+`configs/datasets/company_v2_polar.yaml`이 이 방식을 씁니다. 측정 결과와 한계는 PATCHCORE_PROGRESS.md I절에 있습니다.
+정답 라벨(부품 바깥 원)은 `scripts/preprocessing/company/label_center_tool.py`로 `data/labels_extra/company_center/`에 답니다.
+
 원래 bottle용 preprocess.py·validate_dataset.py와 src/preprocessing/variations.py는 유지합니다.

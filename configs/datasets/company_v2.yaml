@@ -1,0 +1,17 @@
+# 정상 추가분(2026-11-18) 반영 분할 — 학습량 늘리기 실험용
+# 원본 정상 438장 = 기존 32장(09-29, 라벨 있음) + 새로 받은 406장(09-15, 10-12~10-29, 라벨 없음)
+# company_v1(카메라당 학습 10장)과는 분할이 달라 수치를 직접 비교할 때 주의
+# 실행: python scripts/preprocessing/company/prepare_dataset.py --config configs/datasets/company_v2.yaml
+status: proposed
+dataset:
+  root: data/raw/company
+output:
+  root: data/processed/company
+  prefix: company_v2        # 기존 company_* 카테고리와 섞이지 않게 이름을 나눔
+split:
+  seed: 0
+  n_train_per_camera: 100   # 카메라당 학습 정상 100장
+  n_validation_per_camera: 20  # 카메라당 검증 정상 20장, 나머지는 테스트
+roi:                        # ROI는 학습 정상 전부에 라벨이 필요해 v2에서는 쓰지 않음 (--roi 사용 금지)
+  half_size: 420
+  reference_image_size: 1216

@@ -3,14 +3,18 @@
 정답(중심, 시작점 각도)을 알고 있는 가짜 스프링 끝면 이미지를 그려서,
 코드가 그 값을 찾아내는지 확인한다.
 """
+from pathlib import Path
+import tempfile
 import unittest
 
 import cv2
 import numpy as np
 
 from src.preprocessing.company.alignment import (
-    align_and_mask, align_image, find_part_center, find_spring_start,
+    HOLE_TO_OUTER, align_and_mask, align_image, find_part, find_part_center, find_spring_start,
+    locate_part_coarse,
 )
+from src.preprocessing.company.prepare_aligned import calibrate_cameras
 
 
 def make_spring_face(center=(205, 195), radius=150, start_deg=40.0, size=420):
@@ -77,6 +81,63 @@ class SpringAlignmentTests(unittest.TestCase):
         b, _ = align_image(make_spring_face(start_deg=200.0), (205, 195), 150)
         difference = np.abs(a.astype(int) - b.astype(int)).mean()
         self.assertLess(difference, 3.0)
+
+
+class GlobalSearchTests(unittest.TestCase):
+    """대략 중심이 크게 틀려도(촬영 위치가 바뀐 경우) 부품을 찾는지."""
+
+    def test_coarse_finds_part_with_bright_background(self):
+        image = make_spring_face(center=(205, 195))
+        image[:30] = 250                                                   # 실제 사진처럼 위쪽 흰 배경
+        center, radius, score = locate_part_coarse(image, 150)
+        # 대략값: 어두운 미연마 구간 때문에 한쪽으로 치우침 → 반지름의 15%까지 허용 (정밀 맞춤 출발점일 뿐)
+        self.assertLess(np.hypot(center[0] - 205, center[1] - 195), 0.15 * 150)
+        self.assertGreater(score, 100)                                     # 띠(240) − 구멍(25) 근처
+
+    def test_global_search_fixes_far_guess(self):
+        image = make_spring_face(center=(205, 195))
+        far = (360, 360)                                                   # 실제보다 230px 떨어진 대략값 (구멍 밖)
+        new, _, info = find_part(image, far, 150, center_search="global")  # 새 방식은 대략값을 안 씀
+        self.assertLess(np.hypot(new[0] - 205, new[1] - 195), 3.0)
+        self.assertIn("coarse_score", info)
+
+    def test_radius_from_hole(self):
+        image = make_spring_face(center=(205, 195), radius=150)            # 가짜 구멍 반지름 = 0.4 × 150 = 60
+        _, radius, info = find_part(image, (205, 195), 150, radius_from="hole")
+        self.assertAlmostEqual(radius, HOLE_TO_OUTER * 60, delta=3.0)
+        self.assertEqual(info["radius"], round(radius, 1))
+
+    def test_default_matches_old_behavior(self):
+        image = make_spring_face(center=(205, 195))
+        center, radius, info = find_part(image, (215, 188), 150)           # 아무 옵션 없음
+        np.testing.assert_allclose(center, find_part_center(image, (215, 188), 150))
+        self.assertEqual(radius, 150)
+
+
+class CameraCalibrationTests(unittest.TestCase):
+    """라벨 없는 학습 정상이 섞여도 라벨 있는 것만으로 카메라 대략값을 구하는지."""
+
+    def write_label(self, root, stem, cx, cy, r):
+        labels = Path(root) / "step" / "labels" / "train"                 # 실제 원본과 같은 라벨 위치
+        labels.mkdir(parents=True, exist_ok=True)
+        angles = np.linspace(0, 2 * np.pi, 8, endpoint=False)              # 원 위의 점 8개
+        xy = np.stack([cx + r * np.cos(angles), cy + r * np.sin(angles)], 1) / 1216  # 0~1 좌표
+        (labels / f"{stem}.txt").write_text("1 " + " ".join(f"{v:.6f}" for v in xy.ravel()), encoding="utf-8")
+
+    def test_unlabeled_train_images_are_skipped(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write_label(root, "A_camera_1", 600, 610, 350)            # 라벨 있는 cam1
+            self.write_label(root, "B_camera_2", 620, 590, 360)            # 라벨 있는 cam2
+            train = ["A_camera_1", "B_camera_2", "NEW1_camera_1", "NEW2_camera_2"]  # NEW = 라벨 없음
+            result = calibrate_cameras(root, train, 1216)
+            self.assertAlmostEqual(result["camera_1"]["center"][0], 600, delta=1)
+            self.assertEqual(result["camera_2"]["n_labeled"], 1)
+
+    def test_camera_without_any_label_fails(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.write_label(root, "A_camera_1", 600, 610, 350)            # cam2 라벨은 하나도 없음
+            with self.assertRaises(ValueError):
+                calibrate_cameras(root, ["A_camera_1", "NEW_camera_2"], 1216)
 
 
 if __name__ == "__main__":

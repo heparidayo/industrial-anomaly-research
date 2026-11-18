@@ -26,13 +26,22 @@ LOW_RISE_WARNING = 80.0
 
 
 def calibrate_cameras(source_root, train_stems, image_size):
-    """학습 정상 이미지의 기준 원 라벨 평균 → 카메라별 (대략 중심, 대략 반지름)."""
-    circles = load_reference_circles(source_root, image_size, allowed_stems=set(train_stems))
+    """학습 정상 이미지의 기준 원 라벨 평균 → 카메라별 (대략 중심, 대략 반지름).
+
+    라벨이 없는 학습 정상(2026-11 추가분 등)은 건너뛰고, 라벨 있는 학습 정상만 평균한다.
+    대략값이라 일부만 써도 되며, 이미지별 정확한 중심은 사진에서 따로 찾는다.
+    """
+    labeled_names = {p.stem for p in Path(source_root).glob("*/labels/train/*.txt")}  # 라벨 파일이 있는 이미지 이름
+    labeled = sorted(set(train_stems) & labeled_names)                     # 라벨 있는 학습 정상만
+    circles = load_reference_circles(source_root, image_size, allowed_stems=set(labeled))  # 그 라벨만 읽기
     result = {}
-    for cam in sorted({camera_of(stem) for stem in train_stems}):
-        values = np.array([circles[stem] for stem in train_stems if camera_of(stem) == cam])
+    for cam in sorted({camera_of(stem) for stem in train_stems}):         # 학습에 있는 카메라마다
+        values = np.array([circles[stem] for stem in labeled if camera_of(stem) == cam])
+        if len(values) == 0:                                               # 이 카메라엔 라벨 있는 학습 정상이 없음
+            raise ValueError(f"{cam}: 기준 원 라벨이 있는 학습 정상 이미지가 없습니다. 분할 seed나 장수를 바꾸세요.")
         # values 한 줄 = [중심 x, 중심 y, 반지름] → 이 카메라 이미지들의 평균을 쓴다
-        result[cam] = {"center": values[:, :2].mean(0).tolist(), "radius": float(values[:, 2].mean())}
+        result[cam] = {"center": values[:, :2].mean(0).tolist(), "radius": float(values[:, 2].mean()),
+                       "n_labeled": int(len(values))}                      # 평균에 쓴 라벨 수 기록
     return result
 
 

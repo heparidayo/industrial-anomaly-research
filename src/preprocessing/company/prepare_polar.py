@@ -68,8 +68,11 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                     "center_y": round(detection["center_y"], 2),
                     "start_deg": detection["start_deg"],
                     "start_rise": round(detection["start_rise"], 1),
-                    # 밝기 절벽이 약하면 시작점을 잘못 찾았을 수 있으니 표시
-                    "low_confidence": detection["start_rise"] < LOW_RISE_WARNING,
+                    # 밝기 절벽이 약하거나(시작점) 구멍으로 잰 반지름이 이상하면 표시
+                    "low_confidence": bool(detection["start_rise"] < LOW_RISE_WARNING
+                                           or detection.get("radius_suspect", False)),
+                    # 새 검출 방식(global·hole)을 켰을 때만 생기는 값 (반지름, 부품 찾기 점수 등)
+                    **{k: detection[k] for k in ("radius", "coarse_radius", "coarse_score", "radius_suspect") if k in detection},
                 })
 
             (out / "split.csv").write_bytes((source / "split.csv").read_bytes())  # 분할 그대로 복사
