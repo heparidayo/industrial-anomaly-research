@@ -1,0 +1,28 @@
+# 면취 고리 펼치기 — 긴 띠 + 띠 양 끝 줄이기 (제안값, 팀 검토 전)
+# company_polarstrip_v1.yaml과 같고 angle_range만 5°~260° → 10°~255°로 양쪽 5°씩 줄임
+# PatchCore를 --input-mode full 로 실행해야 띠가 잘리지 않는다
+# 실행: python scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polarstrip_trim_v1.yaml
+status: proposed
+
+source:
+  root: data/processed/company
+  # 분할 5개 × 카메라 3개를 한 번에 만든다
+  categories: [company_cam1, company_cam2, company_cam12,
+               company_cam1_s1, company_cam2_s1, company_cam12_s1,
+               company_cam1_s2, company_cam2_s2, company_cam12_s2,
+               company_cam1_s3, company_cam2_s3, company_cam12_s3,
+               company_cam1_s4, company_cam2_s4, company_cam12_s4]
+
+# 출력: <카테고리>_polarstriptrim (예: company_cam1_polarstriptrim)
+output:
+  suffix: _polarstriptrim
+
+polar:
+  inner: 0.75
+  outer: 1.05
+  # 바뀐 부분: 5~260 → 10~255
+  angle_range: [10, 255]
+  radial_px: 108
+  # 쌓지 않음 (토막 1개), 가로 1728 × 세로 108 (토막 쌓기 버전과 같은 해상도)
+  rows: 1
+  columns: 1728
