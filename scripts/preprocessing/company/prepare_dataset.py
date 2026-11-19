@@ -35,6 +35,8 @@ def main():
             roi=args.roi,
             roi_half=args.roi_half if args.roi_half is not None else config["roi"]["half_size"],
             reference_image_size=config["roi"]["reference_image_size"],
+            include_normal_batches=config["dataset"].get("include_normal_batches", False),
+            exclude_train_rise_below=settings.get("exclude_train_rise_below"),
         )
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.error(str(error))

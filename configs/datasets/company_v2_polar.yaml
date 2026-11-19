@@ -28,8 +28,5 @@ polar:
   rows: 4
   # 중심: 이미지 전체에서 부품을 먼저 찾고 정밀 맞춤 (기본 calibrated = 카메라 평균 중심에서 출발)
   center_search: global
-  # 반지름: 가운데 구멍 반지름 × 2.027 (기본 camera = 카메라 평균 반지름)
+  # 구멍 반지름에 카메라별 학습 정상에서 보정한 배율을 곱한다.
   radius_from: hole
-  # 학습 정상 중 시작점 rise가 120 미만이면 학습에서 뺌 (split.csv에서 unused로 바뀜, 검증·테스트는 그대로)
-  # 거친 표면은 rise 120 미만에서 반지름을 4~14% 크게 잡음 (PATCHCORE_PROGRESS.md I-6)
-  exclude_train_rise_below: 120

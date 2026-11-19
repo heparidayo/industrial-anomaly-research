@@ -22,6 +22,7 @@ from collections import defaultdict
 import csv
 from pathlib import Path
 import random
+import re
 import sys
 
 import cv2
@@ -30,7 +31,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[3]                        # 레포 최상위 폴더
 sys.path.insert(0, str(ROOT))
 from src.preprocessing.company.alignment import _fit_circle        # 점들에 맞는 원 (최소제곱)
-from src.preprocessing.company.dataset import camera_of, read_image  # 파일명→카메라, 한글 경로 읽기
+from src.preprocessing.company.dataset import camera_of, normal_batch_images, read_image
 
 N_POINTS = 96                                                       # 저장할 원 둘레 점 수 (기존 라벨과 같음)
 SKIP_DATES = {"20260929"}                                           # 이미 라벨 있는 날짜는 제외
@@ -42,15 +43,17 @@ ZOOM_HALF = 40                                                      # 확대경�
 
 def date_of(path):
     """PLC-20261012-... → '20261012'."""
-    return Path(path).name.split("-")[1]
+    match = re.match(r"^PLC-(\d{8})-", Path(path).name)
+    return match.group(1) if match else None
 
 
 def select_images(normal_dir, per_group, seed):
     """(날짜, 카메라)마다 per_group장씩 고정 seed로 뽑는다."""
     groups = defaultdict(list)                                      # (날짜, 카메라) → 파일 목록
-    for path in sorted(Path(normal_dir).glob("*.png")):
-        if date_of(path) not in SKIP_DATES:
-            groups[(date_of(path), camera_of(path))].append(path)
+    for path in normal_batch_images(normal_dir):
+        date = date_of(path)
+        if date and date not in SKIP_DATES:
+            groups[(date, camera_of(path))].append(path)
     rng = random.Random(seed)                                       # 다시 실행해도 같은 선택
     chosen = []
     for key in sorted(groups):
@@ -147,14 +150,13 @@ def main():
     parser.add_argument("--display", type=int, default=900)        # 화면에 보일 크기(px)
     args = parser.parse_args()
 
-    args.out.mkdir(parents=True, exist_ok=True)
     chosen = select_images(args.normal_dir, args.per_group, args.seed)
     reasons = {p: "date_camera_sample" for p in chosen}             # 고른 이유 기록용
-    for stem in EXTRA_STEMS:                                        # 반지름 의심 이미지 추가
-        path = args.normal_dir / f"{stem}.png"
-        if path.exists() and path not in reasons:
+    for path in normal_batch_images(args.normal_dir):
+        if path.stem in EXTRA_STEMS and path not in reasons:
             chosen.append(path)
             reasons[path] = "radius_suspect"
+    args.out.mkdir(parents=True, exist_ok=True)
     with (args.out / "selection.csv").open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
         writer.writerow(["file", "date", "camera", "reason"])      # 어떤 이미지를 왜 골랐는지 기록

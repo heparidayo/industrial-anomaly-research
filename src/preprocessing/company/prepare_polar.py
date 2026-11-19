@@ -15,9 +15,10 @@ import json
 from pathlib import Path
 import tempfile
 
-from .dataset import read_image, write_image
+from .calibration import calibrate_prepared_cameras
+from .dataset import read_image, split_counts, write_image
 from .polar import unwrap_image
-from .prepare_aligned import LOW_RISE_WARNING, calibrate_cameras
+from .prepare_aligned import LOW_RISE_WARNING
 
 
 def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=None):
@@ -50,9 +51,7 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                 rows = list(csv.DictReader(handle))                          # 이미지별 분할 기록
 
             # 카메라별 대략 중심·반지름 (학습 정상 라벨만 사용)
-            train_stems = [Path(r["file"]).stem for r in rows if r["split"] == "train"]
-            calibration = calibrate_cameras(
-                info["source_root"], train_stems, info.get("reference_image_size", 1216))
+            calibration = calibrate_prepared_cameras(source, info, rows, options.get("radius_from"))
 
             out = staging / target_name                                      # 출력 카테고리 폴더
             out.mkdir()
@@ -62,7 +61,8 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                     continue
                 cam = calibration[row["camera"]]                             # 이 이미지 카메라의 대략값
                 image = read_image(source / row["prepared_image"])           # 원본 크기 이미지 읽기
-                stacked, detection = unwrap_image(image, cam["center"], cam["radius"], **options)
+                stacked, detection = unwrap_image(
+                    image, cam["center"], cam["radius"], hole_to_outer=cam.get("hole_to_outer"), **options)
                 prepared = row["prepared_image"]                             # 제외해도 기록에 남길 원래 경로
                 excluded = bool(exclude_below is not None and row["split"] == "train"
                                 and detection["start_rise"] < exclude_below)  # 학습에서 뺄 이미지인가
@@ -98,6 +98,7 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                 writer.writerows(records)                                    # 이미지별 검출 기록
             info.update({                                                    # 어떻게 만들었는지 기록
                 "polar_from": source_name,
+                "counts": split_counts(rows),
                 "polar": {
                     "method": "image_center_and_spring_start_then_ring_unwrap",
                     "calibration": "train_normal_labels_only",

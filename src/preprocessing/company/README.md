@@ -76,9 +76,21 @@ ROI 보정은 학습 정상 라벨만 사용하고 테스트 이미지에는 고
 펼치기 설정의 `polar`에 아래 두 값을 넣으면 이미지마다 중심·반지름을 찾습니다. 넣지 않으면 예전 방식 그대로입니다.
 
 - `center_search: global`: 이미지 전체에서 부품(구멍 어둡고, 연마면 밝고, 바깥 테 어두운 고리)을 먼저 찾은 뒤 기존 방식으로 정밀하게 맞춥니다.
-- `radius_from: hole`: 반지름 = 가운데 구멍 반지름 × 2.027. 구멍은 면취 불량과 상관없어서 면취 폭 정보를 지우지 않습니다.
+- `radius_from: hole`은 각 영상의 구멍 반지름에 카메라별 배율을 곱해 외곽 반지름을 추정합니다. 배율은 기준 원 라벨이 있는 학습 정상 영상에서 외곽 반지름을 구멍 반지름으로 나눈 값의 평균입니다. 사용한 촬영 파일명과 배율은 `dataset_info.json`의 `polar.camera_calibration`에 남습니다.
 
-`configs/datasets/company_v2_polar.yaml`이 이 방식을 씁니다. 측정 결과와 한계는 PATCHCORE_PROGRESS.md I절에 있습니다.
+### 새 정상 데이터를 포함한 v2 비교
+
+v2는 `data/raw/company/대세 라벨링/`의 기존 영상과 `data/raw/company/정상/` 아래의 추가 정상 영상을 함께 읽습니다. 추가 묶음에서는 촬영번호와 `_camera_1` 또는 `_camera_2`가 있는 PNG를 재귀적으로 찾습니다. 동일한 촬영번호·카메라가 두 번 나오면 생성을 중단합니다. v1은 기존 라벨링 폴더만 사용합니다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts/preprocessing/company/prepare_dataset.py --config configs/datasets/company_v2.yaml
+.\.venv\Scripts\python.exe scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_v2_polarstrip.yaml
+.\.venv\Scripts\python.exe scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_v2_polar.yaml
+```
+
+고리 원본은 `company_v2_cam12`, 긴 띠(1728×108)는 `company_v2_cam12_polarstrip`, 4단 적층(432×432)은 `company_v2_cam12_polar`에 저장합니다. 같은 방식으로 카메라별 카테고리도 생성합니다. 카메라당 학습 정상 후보 100장을 배정한 뒤 시작점 밝기 상승폭이 120 미만인 뷰는 공통 분할에서 `unused`로 기록합니다. 검증·테스트에는 이 필터를 적용하지 않습니다. 세 입력의 `split.csv`는 같고 실제 장수와 제외 파일은 `dataset_info.json`의 `counts`, `train_filter.excluded_from_train`에서 확인할 수 있습니다.
+
+이전 버전으로 만든 v2 데이터가 있으면 위 첫 명령의 `--dst`에 새 출력 폴더를 지정하고, 나머지 두 명령에도 같은 경로를 `--data-root`로 지정합니다.
 정답 라벨(부품 바깥 원)은 `scripts/preprocessing/company/label_center_tool.py`로 `data/labels_extra/company_center/`에 답니다.
 
 원래 bottle용 preprocess.py·validate_dataset.py와 src/preprocessing/variations.py는 유지합니다.

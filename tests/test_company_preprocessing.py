@@ -1,13 +1,17 @@
 import csv
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from src.preprocessing.company.dataset import camera_of, crop, group_of, roi_boxes, split_by_camera, write_image
 from src.preprocessing.company.prepare import prepare_company_dataset
+from src.preprocessing.company.prepare_polar import prepare_polar_dataset
+from scripts.preprocessing.company import label_center_tool
 
 
 def make_source(root, normal_groups=6):
@@ -75,6 +79,91 @@ class CompanyPreprocessingTests(unittest.TestCase):
             make_source(Path(temp), normal_groups=3)
             with self.assertRaises(ValueError):
                 split_by_camera(temp, 0, 3, 1)
+
+    def test_nested_normal_batches_are_opt_in_and_keep_source_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            raw, dst = Path(temp) / "원본", Path(temp) / "준비"
+            labels = raw / "대세 라벨링"
+            make_source(labels)
+            image = np.zeros((16, 16, 3), np.uint8)
+            for cam in (1, 2):
+                write_image(raw / "정상" / f"정상{cam}" / f"extra_camera_{cam}.png", image)
+            write_image(raw / "정상/정상1/image_20261110_160305.png", image)
+            v1 = prepare_company_dataset(raw, dst, n_train=2, n_validation=1)
+            direct = split_by_camera(labels, 0, 2, 1)
+            with (v1["company_cam12"] / "split.csv").open(encoding="utf-8-sig") as file:
+                self.assertEqual({r["file"]: r["split"] for r in csv.DictReader(file)},
+                                 {p.name: role for rows in direct.values() for role, _, p in rows})
+            v2 = prepare_company_dataset(raw, dst, prefix="v2", n_train=2, n_validation=1,
+                                         include_normal_batches=True)
+            with (v2["v2_cam12"] / "split.csv").open(encoding="utf-8-sig") as file:
+                rows = list(csv.DictReader(file))
+            info = json.loads((v2["v2_cam12"] / "dataset_info.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(rows), 26)
+            self.assertEqual(Path(info["label_root"]), labels)
+            self.assertTrue(all((Path(info["source_root"]) / r["source"]).is_file() for r in rows))
+            extras = [r for r in rows if r["group_id"] == "extra"]
+            self.assertEqual(len(extras), 2)
+            self.assertEqual(len({r["split"] for r in extras}), 1)
+            write_image(raw / "정상/정상2/extra_camera_1.png", image)
+            with self.assertRaisesRegex(ValueError, "중복"):
+                split_by_camera(labels, 0, 2, 1, normal_batches=raw / "정상")
+
+    def test_label_tool_finds_samples_and_extra_images_in_batch_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            raw, dst = Path(temp) / "정상", Path(temp) / "라벨"
+            extra = label_center_tool.EXTRA_STEMS[0]
+            other = "PLC-20261012-000001_camera_1"
+            for name in (extra, other, "image_20261110_160305", "PLC-20260929-000002_camera_1"):
+                write_image(raw / "정상1" / (name + ".png"), np.zeros((16, 16, 3), np.uint8))
+            self.assertEqual({p.stem for p in label_center_tool.select_images(raw, 1, 0)}, {extra, other})
+            with patch.object(sys, "argv", ["label", "--normal-dir", str(raw), "--out", str(dst), "--per-group", "0"]), \
+                 patch.object(label_center_tool, "label_one", return_value="skip"), \
+                 patch.object(label_center_tool.cv2, "destroyAllWindows"):
+                label_center_tool.main()
+            with (dst / "selection.csv").open(encoding="utf-8-sig") as file:
+                self.assertEqual([(r["file"], r["reason"]) for r in csv.DictReader(file)],
+                                 [(extra + ".png", "radius_suspect")])
+
+    def test_common_train_exclusion_and_counts_across_layouts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            raw, dst = Path(temp) / "원본", Path(temp) / "준비"
+            make_source(raw)
+            split = split_by_camera(raw, 0, 2, 1)
+            rejected = next(p for role, _, p in split["camera_1"] if role == "train")
+            write_image(rejected, np.zeros((16, 16, 3), np.uint8))
+            for group in split.values():
+                kept = next(p for role, _, p in group if role == "train" and p != rejected)
+                write_image(kept, np.full((16, 16, 3), 140, np.uint8))
+            calibration = {cam: {"center": [8, 8], "radius": 5, "hole_to_outer": 2} for cam in split}
+            with patch("src.preprocessing.company.prepare.calibrate_cameras", return_value=calibration), \
+                 patch("src.preprocessing.company.prepare.find_part", return_value=((8, 8), 5, {})), \
+                 patch("src.preprocessing.company.prepare.find_spring_start",
+                       side_effect=lambda image, *_: (0, float(image[0, 0, 0]))) as measure:
+                base = prepare_company_dataset(raw, dst, n_train=2, n_validation=1, exclude_train_rise_below=50)
+            self.assertEqual(measure.call_count, 4)
+            category = "company_cam12"
+            source = base[category]
+            info = json.loads((source / "dataset_info.json").read_text(encoding="utf-8"))
+            self.assertEqual(info["counts"]["train"], 3)
+            self.assertEqual(info["train_filter"]["excluded_from_train"], [{"file": rejected.name, "start_rise": 0}])
+            def unwrap(im, *args, **kwargs):
+                return im, {"center_x": 8, "center_y": 8, "start_deg": 0, "start_rise": int(im[0, 0, 0])}
+
+            with patch("src.preprocessing.company.prepare_polar.calibrate_prepared_cameras", return_value=calibration), \
+                 patch("src.preprocessing.company.prepare_polar.unwrap_image", side_effect=unwrap):
+                for suffix, options in [("_strip", {"rows": 1}), ("_stack", {"rows": 4}),
+                                        ("_legacy", {"exclude_train_rise_below": 110})]:
+                    target = prepare_polar_dataset(dst, [category], suffix=suffix, options=options)[category + suffix]
+                    with (target / "split.csv").open(encoding="utf-8-sig") as file:
+                        rows = list(csv.DictReader(file))
+                    counts = json.loads((target / "dataset_info.json").read_text(encoding="utf-8"))["counts"]
+                    self.assertEqual(counts, {k: sum(r["split"] == k for r in rows) for k in counts})
+                    self.assertEqual(sum(bool(r["prepared_image"]) for r in rows), len(list(target.rglob("*.png"))))
+                    if suffix == "_legacy":
+                        self.assertEqual(counts["unused"], info["counts"]["unused"] + 1)
+                    else:
+                        self.assertEqual((source / "split.csv").read_bytes(), (target / "split.csv").read_bytes())
 
 
 if __name__ == "__main__":

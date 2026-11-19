@@ -74,7 +74,7 @@ def square_columns(radial_px, rows):
 
 
 def unwrap_image(image, approx_center, approx_radius, *, rows=4, radial_px=108, columns=None,
-                 center_search="calibrated", radius_from="camera", **band_options):
+                 center_search="calibrated", radius_from="camera", hole_to_outer=None, **band_options):
     """중심·시작점 찾기 → 띠 펼치기 → 토막 내어 쌓기를 한 번에. 검출 정보도 반환한다.
 
     columns=None : 쌓은 결과가 정사각형이 되도록 가로 칸 수를 자동 계산 (PatchCore 기본 입력용)
@@ -82,7 +82,8 @@ def unwrap_image(image, approx_center, approx_radius, *, rows=4, radial_px=108, 
                    (PatchCore를 input_mode="full"로 실행해 띠 전체를 자르지 않고 볼 때)
     """
     center, radius, extra = find_part(image, approx_center, approx_radius,    # 1) 부품 중심·반지름
-                                      center_search=center_search, radius_from=radius_from)
+                                      center_search=center_search, radius_from=radius_from,
+                                      hole_to_outer=hole_to_outer)
     start_deg, rise = find_spring_start(image, center, radius)                # 1) 시작점 각도
     if columns is None:                                                       # 가로 칸 수를 안 정했으면
         columns = square_columns(radial_px, rows)                             # 정사각형이 되는 값 사용

@@ -11,10 +11,11 @@ import cv2
 import numpy as np
 
 from src.preprocessing.company.alignment import (
-    HOLE_TO_OUTER, align_and_mask, align_image, find_part, find_part_center, find_spring_start,
+    align_and_mask, align_image, find_part, find_part_center, find_spring_start,
     locate_part_coarse,
 )
-from src.preprocessing.company.prepare_aligned import calibrate_cameras
+from src.preprocessing.company.calibration import calibrate_cameras, calibrate_prepared_cameras
+from src.preprocessing.company.dataset import write_image
 
 
 def make_spring_face(center=(205, 195), radius=150, start_deg=40.0, size=420):
@@ -103,8 +104,10 @@ class GlobalSearchTests(unittest.TestCase):
 
     def test_radius_from_hole(self):
         image = make_spring_face(center=(205, 195), radius=150)            # 가짜 구멍 반지름 = 0.4 × 150 = 60
-        _, radius, info = find_part(image, (205, 195), 150, radius_from="hole")
-        self.assertAlmostEqual(radius, HOLE_TO_OUTER * 60, delta=3.0)
+        with self.assertRaisesRegex(ValueError, "hole_to_outer"):
+            find_part(image, (205, 195), 150, radius_from="hole")
+        _, radius, info = find_part(image, (205, 195), 150, radius_from="hole", hole_to_outer=2.5)
+        self.assertAlmostEqual(radius, 150, delta=3.0)
         self.assertEqual(info["radius"], round(radius, 1))
 
     def test_default_matches_old_behavior(self):
@@ -138,6 +141,27 @@ class CameraCalibrationTests(unittest.TestCase):
             self.write_label(root, "A_camera_1", 600, 610, 350)            # cam2 라벨은 하나도 없음
             with self.assertRaises(ValueError):
                 calibrate_cameras(root, ["A_camera_1", "NEW_camera_2"], 1216)
+
+    def test_hole_ratio_uses_only_labeled_train_normals_per_camera(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            rows = []
+            for stem, role, cls, outer in [
+                ("A_camera_1", "train", "good", 150), ("B_camera_2", "train", "good", 132),
+                ("V_camera_1", "validation", "good", 170), ("T_camera_2", "test", "step", 180),
+                ("U_camera_1", "unused", "good", 80),
+            ]:
+                self.write_label(root, stem, 205, 195, outer)
+                rows.append({"file": stem + ".png", "split": role, "class": cls, "prepared_image": stem + ".png"})
+                if role == "train":
+                    write_image(root / (stem + ".png"), make_spring_face())
+            info = {"source_root": str(root)}
+            calibration = calibrate_prepared_cameras(root, info, rows, "hole")
+            for cam, stem, outer in [("camera_1", "A_camera_1", 150), ("camera_2", "B_camera_2", 132)]:
+                self.assertEqual(calibration[cam]["calibration_stems"], [stem])
+                self.assertAlmostEqual(calibration[cam]["hole_to_outer"], outer / 60, delta=0.06)
+            self.write_label(root, "T_camera_2", 0, 0, 0)
+            self.assertEqual(calibration, calibrate_prepared_cameras(root, info, rows, "hole"))
 
 
 if __name__ == "__main__":
