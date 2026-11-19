@@ -1,0 +1,16 @@
+# company_v2_polar.yaml과 같은 구간·표본으로 긴 띠를 만든다. 4등분해 쌓으면 적층본과 같다.
+status: proposed
+source:
+  root: data/processed/company
+  categories: [company_v2_cam1, company_v2_cam2, company_v2_cam12]
+output:
+  suffix: _polarstrip
+polar:
+  inner: 0.75
+  outer: 1.05
+  angle_range: [5, 260]
+  radial_px: 108
+  rows: 1
+  columns: 1728
+  center_search: global
+  radius_from: hole

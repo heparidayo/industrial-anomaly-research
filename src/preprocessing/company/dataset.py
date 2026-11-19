@@ -31,9 +31,12 @@ def group_of(path):
 def resolve_source(src):
     """정상/가 있는 원본 폴더 또는 그 폴더 하나를 포함한 상위 폴더."""
     src = Path(src).resolve()
-    if (src / NORMAL_FOLDER).is_dir():
+    has_normals = (src / NORMAL_FOLDER).is_dir()
+    if has_normals and any((src / name).is_dir() for name in DEFECT_FOLDERS):
         return src
     candidates = sorted(p for p in src.iterdir() if p.is_dir() and (p / NORMAL_FOLDER).is_dir()) if src.is_dir() else []
+    if has_normals and not candidates:
+        return src
     if len(candidates) != 1:
         raise ValueError("--src에 정상/ 및 불량 종류 폴더가 있는 원본 경로를 지정하세요.")
     return candidates[0]
@@ -45,7 +48,15 @@ def list_images(src, folder):
     return sorted((nested if nested.is_dir() else directory).glob("*.png"))
 
 
-def split_by_camera(src, seed, n_train, n_validation=3):
+def normal_batch_images(directory):
+    """추가 정상 폴더의 하위 묶음까지 읽고 촬영번호·카메라가 있는 PNG만 반환한다."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise ValueError(f"추가 정상 폴더가 없습니다: {directory}")
+    return sorted(p for p in directory.rglob("*.png") if CAMERA_PATTERN.fullmatch(p.stem))
+
+
+def split_by_camera(src, seed, n_train, n_validation=3, *, normal_batches=None):
     """두 카메라에 공통인 촬영번호 분할을 만든다.
 
     정상은 카메라당 n_train장 학습, n_validation장 검증, 나머지 테스트.
@@ -60,7 +71,11 @@ def split_by_camera(src, seed, n_train, n_validation=3):
     folders = [p for p in sorted(src.iterdir()) if p.is_dir()]
     for folder in folders:
         class_name = "good" if folder.name == NORMAL_FOLDER else folder.name
-        for path in list_images(src, folder.name):
+        images = list_images(src, folder.name)
+        if class_name == "good" and normal_batches is not None:
+            batches = normal_batch_images(normal_batches)
+            images = batches if Path(normal_batches).resolve() == folder else images + batches
+        for path in images:
             key = (group_of(path), camera_of(path))
             if key in seen:
                 raise ValueError(f"중복 촬영번호·카메라: {path.name}")
@@ -116,6 +131,11 @@ def split_by_camera(src, seed, n_train, n_validation=3):
             if name != "train" and not (classes - {"good"}):
                 raise ValueError(f"{cam}/{name}: 불량 촬영그룹이 부족합니다.")
     return result
+
+
+def split_counts(records):
+    return {role: sum(row["split"] == role for row in records)
+            for role in ("train", "validation", "test", "unused")}
 
 
 def load_reference_circles(src, image_size=IMAGE_SIZE, *, allowed_stems=None):

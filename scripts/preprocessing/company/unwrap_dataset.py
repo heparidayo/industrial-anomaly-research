@@ -24,6 +24,7 @@ from src.preprocessing.company.prepare_polar import prepare_polar_dataset
 def main():
     parser = argparse.ArgumentParser(description="회사 데이터 면취 고리 펼치기")
     parser.add_argument("--config", type=Path, default=Path("configs/datasets/company_polar_v1.yaml"))
+    parser.add_argument("--data-root", type=Path, help="원본 크기 카테고리가 있는 준비 데이터 폴더")
     parser.add_argument("--categories", nargs="+")      # 설정 파일의 카테고리 대신 쓸 목록
     parser.add_argument("--suffix")                     # 설정 파일의 출력 이름 꼬리 대신 쓸 값
     args = parser.parse_args()
@@ -40,10 +41,15 @@ def main():
             "radial_px": int(settings["radial_px"]),
             "rows": int(settings["rows"]),
         }
+        for key in ("center_search", "radius_from"):                               # 검출 방식 (없으면 예전 방식)
+            if settings.get(key) is not None:
+                options[key] = str(settings[key])
+        if settings.get("exclude_train_rise_below") is not None:                  # 학습 제외 기준 (없으면 안 뺌)
+            options["exclude_train_rise_below"] = float(settings["exclude_train_rise_below"])
         if settings.get("columns") is not None:                                   # 가로 칸 수를 직접 정한 경우만
             options["columns"] = int(settings["columns"])                         # (없으면 정사각형 자동 계산)
         created = prepare_polar_dataset(
-            resolve(Path(config["source"]["root"])),
+            resolve(args.data_root or Path(config["source"]["root"])),
             args.categories or config["source"]["categories"],
             suffix=args.suffix or config["output"]["suffix"],
             options=options,

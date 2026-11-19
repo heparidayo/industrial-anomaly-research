@@ -1,0 +1,29 @@
+# 면취 고리 펼치기 — 토막 쌓기 + 띠 양 끝 줄이기 (제안값, 팀 검토 전)
+# company_polar_v1.yaml과 같고 angle_range만 5°~260° → 10°~255°로 양쪽 5°씩 줄임
+# 목적: 띠 양 끝(시작점 바로 뒤 / 연마 안 된 구간 바로 앞)의 시작점 오차 잡음을 빼고 비교
+# 주의: 5°~10°, 255°~260°는 검사하지 않음 (기업 검사 범위보다 10° 좁음)
+# 실행: python scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polar_trim_v1.yaml
+# 결과(2026-11-18): 검증셋에서 개선이 없어 채택 안 함 → 기존 5°~260° 설정 유지. 기록·재현용으로 남김
+status: rejected
+
+source:
+  root: data/processed/company
+  # 분할 5개 × 카메라 3개를 한 번에 만든다
+  categories: [company_cam1, company_cam2, company_cam12,
+               company_cam1_s1, company_cam2_s1, company_cam12_s1,
+               company_cam1_s2, company_cam2_s2, company_cam12_s2,
+               company_cam1_s3, company_cam2_s3, company_cam12_s3,
+               company_cam1_s4, company_cam2_s4, company_cam12_s4]
+
+# 출력: <카테고리>_polartrim (예: company_cam1_polartrim) — 기존 _polar 결과와 섞이지 않게 이름 분리
+output:
+  suffix: _polartrim
+
+polar:
+  inner: 0.75
+  outer: 1.05
+  # 바뀐 부분: 5~260 → 10~255
+  angle_range: [10, 255]
+  radial_px: 108
+  # 4토막 쌓기 → 432 × 432 (가로 칸 수 1728 그대로라 1°당 픽셀이 약 4% 늘어남)
+  rows: 4

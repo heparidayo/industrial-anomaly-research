@@ -14,6 +14,7 @@ from scripts.evaluation.evaluate_threshold import main as evaluate_threshold
 from scripts.evaluation.evaluate_predictions import main as evaluate_predictions
 from scripts.patchcore.run_patchcore_experiment import artifact_paths, check_metadata, run_one
 from src.models.patchcore.artifacts import file_sha256
+from src.models.patchcore.threshold import threshold_from_scores, threshold_tag
 
 
 class ExperimentIntegrationTests(unittest.TestCase):
@@ -21,7 +22,7 @@ class ExperimentIntegrationTests(unittest.TestCase):
         default = artifact_paths("bottle", 0.01, folds=5)
         alternate = artifact_paths("bottle", 0.01, seed=1, folds=5)
         self.assertEqual(default["prediction"].name, "bottle_original.csv")
-        self.assertTrue(default["threshold"].name.endswith("_k5.json"))
+        self.assertTrue(default["threshold"].name.endswith("_k5_q95.json"))  # 기본 규칙 = 95% 분위수
         self.assertNotEqual(default["prediction"], alternate["prediction"])
         other_folds = artifact_paths("bottle", 0.01, folds=10)
         self.assertEqual(default["prediction"], other_folds["prediction"])
@@ -30,7 +31,8 @@ class ExperimentIntegrationTests(unittest.TestCase):
     def test_runner_uses_selected_calibration_in_common_evaluation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            args = SimpleNamespace(projection_dim=2, seed=0, split="test", folds=2)
+            # 이 테스트는 fold 수별 파일 선택이 목적 → 규칙 정보가 없는 예전(max) 임계값 파일로 확인
+            args = SimpleNamespace(projection_dim=2, seed=0, split="test", folds=2, threshold_rule="max")
             data_root = root / "data"
             inputs = {"folds": 2, "train_fingerprint": "train", "eval_fingerprint": "test"}
 
@@ -45,7 +47,7 @@ class ExperimentIntegrationTests(unittest.TestCase):
 
             with patch("scripts.patchcore.run_patchcore_experiment.ROOT", root), \
                  patch("scripts.patchcore.run_patchcore_experiment.run", side_effect=common_cli):
-                paths = artifact_paths("synthetic", 1, 2, 0, 2)
+                paths = artifact_paths("synthetic", 1, 2, 0, 2, threshold_rule="max")
                 paths["raw"].parent.mkdir(parents=True)
                 paths["raw"].write_bytes(b"raw")
                 paths["raw"].with_suffix(".pt.meta.json").write_text(json.dumps({
@@ -77,7 +79,7 @@ class ExperimentIntegrationTests(unittest.TestCase):
                 summaries = []
                 for folds, threshold in ((2, 1.0), (3, 0.25)):
                     args.folds = inputs["folds"] = folds
-                    selected = artifact_paths("synthetic", 1, 2, 0, folds)
+                    selected = artifact_paths("synthetic", 1, 2, 0, folds, threshold_rule="max")
                     selected["threshold"].write_text(
                         json.dumps({**config, "folds": folds, "threshold": threshold}), encoding="utf-8")
                     summaries.append(run_one("synthetic", 1, args, data_root, inputs))
@@ -128,6 +130,59 @@ class ExperimentIntegrationTests(unittest.TestCase):
                 result = json.loads(target.read_text(encoding="utf-8"))
                 self.assertNotIn("reference", result["groups"][0])
                 self.assertEqual(threshold.read_bytes(), frozen)
+
+
+class ThresholdRuleTests(unittest.TestCase):
+    """임계값 규칙: 95% 분위수(기본) / 최댓값(예전)."""
+
+    def test_quantile_and_max_values(self):
+        scores = list(range(1, 101))                                        # 1~100점
+        self.assertEqual(threshold_from_scores(scores, "max"), 100)
+        # 위치 = 99 × 0.95 = 94.05 → 95점과 96점 사이 5% 지점
+        self.assertAlmostEqual(threshold_from_scores(scores, "quantile", 0.95), 95.05)
+        # 10장이면 위치 8.55 → 9점과 10점 사이 → 거의 최댓값 (장수가 적으면 분위수 의미가 약함)
+        self.assertAlmostEqual(threshold_from_scores(range(1, 11), "quantile", 0.95), 9.55)
+
+    def test_tag_keeps_old_names_for_max(self):
+        self.assertEqual(threshold_tag("max", 0.95), "")                    # 예전 파일 이름 그대로
+        self.assertEqual(threshold_tag("quantile", 0.95), "_q95")
+        self.assertEqual(threshold_tag("quantile", 0.975), "_q97p5")
+        for bad in (("quantile", 1.0), ("quantile", 0), ("median", 0.5)):
+            with self.assertRaises(ValueError):
+                threshold_tag(*bad)
+
+    def test_default_artifacts_are_separate_from_old_max(self):
+        new = artifact_paths("bottle", 0.01, folds=5)                       # 기본 = 95% 분위수
+        old = artifact_paths("bottle", 0.01, folds=5, threshold_rule="max")
+        self.assertTrue(new["threshold"].name.endswith("_k5_q95.json"))
+        self.assertTrue(old["threshold"].name.endswith("_k5.json"))
+        self.assertNotEqual(new["threshold_metrics"], old["threshold_metrics"])
+        self.assertEqual(new["threshold_max"], old["threshold"])            # 점수 재사용 대상 = 예전 파일
+        self.assertEqual(new["prediction"], old["prediction"])              # 예측은 규칙과 무관하게 공유
+
+    def test_reuse_scores_changes_only_rule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            raw, old, new, other = (root / n for n in ("raw.pt", "max.json", "q.json", "other.pt"))
+            embeddings = torch.tensor([[0., 0.], [1., 1.], [4., 4.], [5., 5.], [9., 9.]])
+            for path, data in ((raw, embeddings), (other, embeddings + 1)):
+                torch.save({"category": "synthetic", "stage": "raw_candidates", "embeddings": data,
+                            "patches_per_image": 1, "image_names": [f"{c}.png" for c in "abcde"],
+                            "image_group_ids": list("abcde")}, path)
+            base = ["compute", "--category", "synthetic", "--input", str(raw), "--percentage", "1"]
+            with patch.object(sys, "argv", base + ["--rule", "max", "--output", str(old)]):
+                compute_threshold()                                         # 예전 규칙으로 점수 계산
+            with patch.object(sys, "argv", base + ["--from-scores", str(old), "--output", str(new)]):
+                compute_threshold()                                         # 기본 규칙, 점수 재사용
+            a, b = (json.loads(p.read_text(encoding="utf-8")) for p in (old, new))
+            self.assertEqual(a["held_out_scores"], b["held_out_scores"])   # 점수는 그대로
+            self.assertEqual((b["rule"], b["quantile"]), ("quantile", 0.95))
+            self.assertAlmostEqual(b["threshold"], threshold_from_scores(a["held_out_scores"].values(), "quantile", 0.95))
+            self.assertLess(b["threshold"], a["threshold"])                 # 분위수 < 최댓값
+            with patch.object(sys, "argv", ["compute", "--category", "synthetic", "--input", str(other),
+                                            "--percentage", "1", "--from-scores", str(old),
+                                            "--output", str(root / "bad.json")]),                  self.assertRaises(SystemExit):
+                compute_threshold()                                         # 다른 메모리의 점수는 거부
 
 
 if __name__ == "__main__":

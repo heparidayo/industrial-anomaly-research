@@ -2,25 +2,62 @@
 
 import csv
 import json
+import math
 from pathlib import Path
 import re
 import tempfile
 
+from .alignment import find_part, find_spring_start
+from .calibration import calibrate_cameras
 from .dataset import (
-    camera_of, crop, group_of, load_reference_circles, read_image,
-    resolve_source, roi_boxes, split_by_camera, write_image,
+    NORMAL_FOLDER, camera_of, crop, group_of, load_reference_circles, read_image,
+    resolve_source, roi_boxes, split_by_camera, split_counts, write_image,
 )
+
+
+def filter_train_by_rise(split, label_root, image_size, threshold):
+    """학습 후보의 시작점 밝기 상승폭을 한 번 검사해 모든 입력 형태가 같은 분할을 쓰게 한다."""
+    if not math.isfinite(threshold) or threshold < 0:
+        raise ValueError("학습 제외 기준은 0 이상의 유한한 값이어야 합니다.")
+    train = {p.stem: p for rows in split.values() for role, cls, p in rows
+             if role == "train" and cls == "good"}
+    calibration = calibrate_cameras(label_root, train, image_size, train_images=train)
+    excluded = {cam: [] for cam in split}
+    for cam, rows in split.items():
+        params = calibration[cam]
+        for index, (role, cls, path) in enumerate(rows):
+            if role != "train":
+                continue
+            image = read_image(path)
+            center, radius, _ = find_part(
+                image, params["center"], params["radius"], center_search="global",
+                radius_from="hole", hole_to_outer=params["hole_to_outer"])
+            _, rise = find_spring_start(image, center, radius)
+            if rise < threshold:
+                rows[index] = ("unused", cls, path)
+                excluded[cam].append({"file": path.name, "start_rise": float(rise)})
+        if not any(role == "train" for role, _, _ in rows):
+            raise ValueError(f"{cam}: 밝기 상승폭 기준을 적용한 뒤 남은 학습 정상이 없습니다.")
+    return calibration, excluded
 
 
 def prepare_company_dataset(src, dst, *, prefix="company", seed=0,
                             n_train=10, n_validation=3, roi=False,
-                            roi_half=420, reference_image_size=1216):
-    src, dst = resolve_source(src), Path(dst).resolve()
-    if dst.is_relative_to(src):
+                            roi_half=420, reference_image_size=1216,
+                            include_normal_batches=False, exclude_train_rise_below=None):
+    raw_root, dst = Path(src).resolve(), Path(dst).resolve()
+    src = resolve_source(raw_root)
+    batch_dir = raw_root / NORMAL_FOLDER
+    normal_batches = batch_dir if include_normal_batches and batch_dir.is_dir() else None
+    source_root = raw_root if normal_batches is not None else src
+    if dst.is_relative_to(raw_root):
         raise ValueError("원본 폴더 안에는 준비된 데이터를 저장할 수 없습니다.")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", prefix):
         raise ValueError("prefix는 영문·숫자·밑줄·하이픈만 사용하세요.")
-    split = split_by_camera(src, seed, n_train, n_validation)
+    split = split_by_camera(src, seed, n_train, n_validation, normal_batches=normal_batches)
+    if exclude_train_rise_below is not None:
+        filter_calibration, excluded = filter_train_by_rise(
+            split, src, reference_image_size, exclude_train_rise_below)
     calibration = {path.stem for rows in split.values()
                    for role, _, path in rows if role == "train"}
     boxes = None
@@ -59,7 +96,7 @@ def prepare_company_dataset(src, dst, *, prefix="company", seed=0,
                     records.append({
                         "split": role, "class": class_name, "label": int(class_name != "good"),
                         "camera": cam, "group_id": group_of(path), "file": path.name,
-                        "source": path.relative_to(src).as_posix(), "prepared_image": prepared,
+                        "source": path.relative_to(source_root).as_posix(), "prepared_image": prepared,
                     })
             with (out / "split.csv").open("w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.DictWriter(handle, fieldnames=list(records[0]))
@@ -70,14 +107,21 @@ def prepare_company_dataset(src, dst, *, prefix="company", seed=0,
                 "split_unit": "capture_group",
                 "seed": seed, "n_train_per_camera": n_train,
                 "n_validation_per_camera": n_validation,
-                "source_root": str(src), "roi_boxes_xyxy": boxes,
+                "source_root": str(source_root), "roi_boxes_xyxy": boxes,
                 "roi_calibration": "train_normal_only" if roi else None,
                 "roi_calibration_stems": sorted(
                     stem for stem in calibration if camera_of(stem) in cameras) if roi else [],
                 "reference_image_size": reference_image_size,
-                "counts": {name: sum(row["split"] == name for row in records)
-                           for name in ("train", "validation", "test", "unused")},
+                "counts": split_counts(records),
             }
+            if source_root != src:
+                info["label_root"] = str(src)
+            if exclude_train_rise_below is not None:
+                info["train_filter"] = {
+                    "exclude_train_rise_below": exclude_train_rise_below,
+                    "camera_calibration": {cam: filter_calibration[cam] for cam in cameras},
+                    "excluded_from_train": [entry for cam in cameras for entry in excluded[cam]],
+                }
             (out / "dataset_info.json").write_text(
                 json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
         for category in categories:
