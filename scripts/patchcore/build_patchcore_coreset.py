@@ -17,6 +17,7 @@ from src.models.patchcore.coreset import (
     approximate_greedy_coreset_indices,
 )
 from src.models.patchcore.artifacts import file_sha256
+from src.models.patchcore.transforms import input_options_of  # 저장된 입력 방식 읽기
 
 
 def main():
@@ -71,6 +72,8 @@ def main():
 
 
     features = data["embeddings"]
+    # 원본 메모리를 만들 때 쓴 입력 방식 (옛 파일은 값이 없어서 기본값 = 기존 방식)
+    input_mode, input_scale = input_options_of(data)
 
     print("=== PatchCore Coreset 생성 ===")
     print("원본 특징:", tuple(features.shape))
@@ -115,11 +118,16 @@ def main():
         "backbone": data["backbone"],
         "image_count": data["image_count"],
         "raw_memory_sha256": file_sha256(input_path),
+        # 학습 입력 방식을 그대로 넘겨서 추론기(PatchCorePredictor)가 같은 변환을 쓰게 한다
+        # (옛 원본 메모리에는 값이 없으므로 기본값 = 기존 방식)
+        "input_mode": input_mode,
+        "input_scale": input_scale,
     }, output_path)
     output_path.with_suffix(output_path.suffix + ".meta.json").write_text(json.dumps({
         "category": data["category"], "percentage": args.percentage,
         "projection_dim": args.projection_dim, "seed": args.seed,
         "raw_memory_sha256": file_sha256(input_path),
+        "input_mode": input_mode, "input_scale": input_scale,  # 기록용
     }, indent=2), encoding="utf-8")
 
     print("\n=== Coreset 생성 완료 ===")

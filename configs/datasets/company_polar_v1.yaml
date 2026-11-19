@@ -1,0 +1,25 @@
+# 면취 고리 펼치기(극좌표) 설정 (제안값, 팀 검토 전)
+# 실행: python scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polar_v1.yaml
+status: proposed
+
+# 입력: prepare_dataset.py로 만든 원본 크기 카테고리 (ROI·정렬 카테고리는 받지 않음)
+source:
+  root: data/processed/company
+  categories: [company_cam1, company_cam2, company_cam12]
+
+# 출력: 같은 폴더에 <카테고리><suffix> 로 생성 (예: company_cam1_polar)
+output:
+  suffix: _polar
+
+polar:
+  # 펼칠 반지름 범위 (부품 외곽선 반지름의 배수)
+  # 학습 정상 라벨의 면취 안쪽 경계 = 0.84~0.97배(중앙값 0.91) → 중심 오차 여유를 두고 0.75부터
+  # 바깥은 외곽선(1.0)이 보이도록 1.05까지
+  inner: 0.75
+  outer: 1.05
+  # 펼칠 각도 범위 (시작점 기준, 도). 기업 검사 제외 -5°~100°를 뺀 나머지 = 5°~260°
+  angle_range: [5, 260]
+  # 띠의 세로 칸 수. 0.30배 × 반지름 약 360px ≈ 108 → 원본과 비슷한 해상도
+  radial_px: 108
+  # 띠를 몇 토막으로 쌓을지. 4토막 → 432 × 432 정사각형 (토막 하나 = 약 64°)
+  rows: 4

@@ -16,6 +16,21 @@ from src.models.patchcore.batch import make_samples
 from src.evaluation.metrics import image_auroc_by_defect
 from src.models.patchcore.artifacts import file_sha256, image_group_id, input_fingerprint, train_samples
 from src.models.patchcore.threshold import effective_folds
+from src.models.patchcore.transforms import (  # 입력 방식 (기본 = 기존 가운데 224 자르기)
+    DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE, INPUT_MODES, check_input_options,
+)
+
+
+def requested_input(args):
+    """이번 실행의 (입력 방식, 배율). 옵션이 없는 호출(옛 코드·테스트)은 기본값으로 본다."""
+    mode = getattr(args, "input_mode", DEFAULT_INPUT_MODE)               # 없으면 center_crop
+    scale = float(getattr(args, "input_scale", DEFAULT_INPUT_SCALE))     # 없으면 1.0
+    return mode, scale
+
+
+def input_options_changed(args):
+    """기본(기존) 입력 방식과 다른지. 같으면 기록·비교에 넣지 않아 옛 실험 기록과 그대로 호환된다."""
+    return requested_input(args) != (DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE)
 
 
 def pct_name(value):
@@ -89,12 +104,29 @@ def request_manifest(args, data_root):
     code_files += list((ROOT / "scripts/patchcore").glob("*.py"))
     code_files += list((ROOT / "scripts/evaluation").glob("*.py"))
     code_hash = hashlib.sha256("".join(file_sha256(p) for p in sorted(code_files)).encode()).hexdigest()
-    return {
+    request = {
         "data_root": str(data_root), "split": args.split, "categories": args.categories,
         "percentages": args.pcts, "projection_dim": args.projection_dim, "seed": args.seed,
         "requested_folds": args.folds, "inputs": inputs, "code_sha256": code_hash,
         "python": sys.version, "torch": importlib.metadata.version("torch"),
     }
+    if input_options_changed(args):                       # 기본과 다를 때만 실험 기록에 남김
+        request["input_mode"], request["input_scale"] = requested_input(args)
+    return request
+
+
+def check_input_mode(raw_path, args):
+    """이미 있는 원본 메모리가 이번 실행과 같은 입력 방식으로 만들어졌는지 확인한다.
+
+    다른 방식으로 만든 메모리를 재사용하면 학습·평가 변환이 어긋나므로 중단한다.
+    (옛 메모리 기록에는 값이 없으므로 기본값 = 기존 방식으로 본다)
+    """
+    meta = json.loads(raw_path.with_suffix(raw_path.suffix + ".meta.json").read_text(encoding="utf-8"))  # 원본 메모리 기록
+    mode = meta.get("input_mode", DEFAULT_INPUT_MODE)                  # 저장된 입력 방식
+    scale = float(meta.get("input_scale", DEFAULT_INPUT_SCALE))        # 저장된 배율
+    if (mode, scale) != requested_input(args):
+        raise ValueError(f"메모리의 입력 방식({mode}, {scale})이 요청{requested_input(args)}과 다릅니다. "
+                         f"다른 카테고리 이름을 사용하세요: {raw_path}")
 
 
 def run_one(category, percentage, args, data_root, inputs):
@@ -102,10 +134,12 @@ def run_one(category, percentage, args, data_root, inputs):
                            args.seed, inputs["folds"], args.split)
     if not paths["raw"].exists():
         run("scripts/patchcore/build_patchcore_memory.py",
-            "--category", category, "--data-root", data_root)
+            "--category", category, "--data-root", data_root,
+            "--input-mode", requested_input(args)[0], "--input-scale", requested_input(args)[1])  # 입력 방식 전달
     check_metadata(paths["raw"], {"category": category,
                                   "data_root": str(data_root),
                                   "input_fingerprint": inputs["train_fingerprint"]})
+    check_input_mode(paths["raw"], args)                  # 학습·평가 입력 방식 일치 확인
     config = {"category": category, "percentage": percentage,
               "projection_dim": args.projection_dim, "seed": args.seed,
               "raw_memory_sha256": file_sha256(paths["raw"])}
@@ -146,7 +180,7 @@ def run_one(category, percentage, args, data_root, inputs):
     raw_metadata = json.loads(paths["raw"].with_suffix(".pt.meta.json").read_text(encoding="utf-8"))
     dataset_info_path = data_root / category / "dataset_info.json"
     dataset_info = json.loads(dataset_info_path.read_text(encoding="utf-8")) if dataset_info_path.is_file() else {}
-    return {
+    row = {
         "category": category, "split": args.split, "pct": percentage,
         "train_normal_count": len(raw_metadata["image_names"]),
         "model_seed": args.seed, "split_seed": dataset_info.get("seed"),
@@ -157,6 +191,9 @@ def run_one(category, percentage, args, data_root, inputs):
         "missed": f"{group['missed']}/{group['defect_count']}", "f1": group["f1"],
         **{f"auroc_{name}": value for name, value in image_auroc_by_defect(rows).items()},
     }
+    if input_options_changed(args):                       # 기본과 다를 때만 요약 표에 입력 방식 열 추가
+        row["input_mode"], row["input_scale"] = requested_input(args)
+    return row
 
 
 def summary_markdown(name, rows):
@@ -183,9 +220,17 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
+    # 입력 방식: center_crop(기본, 기존과 동일) / full(자르지 않음, 펼친 긴 띠용)
+    parser.add_argument("--input-mode", choices=INPUT_MODES, default=DEFAULT_INPUT_MODE)
+    # full 방식의 크기 배율 (1.0 = 원본 크기 그대로)
+    parser.add_argument("--input-scale", type=float, default=DEFAULT_INPUT_SCALE)
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
         parser.error("name은 영문·숫자·밑줄·하이픈만 사용하세요.")
+    try:
+        check_input_options(args.input_mode, args.input_scale)   # 잘못된 조합이면 바로 중단
+    except ValueError as error:
+        parser.error(str(error))
     output = ROOT / "outputs/patchcore/summary" / f"{args.name}.csv"
     try:
         if args.render_only:

@@ -7,7 +7,6 @@ import sys
 
 import torch
 from PIL import Image
-from torchvision.models import Wide_ResNet50_2_Weights
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -16,6 +15,7 @@ from src.models.patchcore.backbone import PatchCoreBackbone
 from src.models.patchcore.features import PatchFeatureExtractor
 from src.models.patchcore.scoring import compute_patch_scores
 from src.models.patchcore.anomaly_map import create_anomaly_map
+from src.models.patchcore.transforms import input_options_of, make_transform  # 입력 변환 (학습과 같은 방식)
 from src.evaluation.visualization import save_anomaly_visualization
 
 def main():
@@ -85,8 +85,10 @@ def main():
     print("Memory Bank:", tuple(memory_bank.shape))
 
     # 2. Backbone 및 Feature Extractor 준비
-    weights = Wide_ResNet50_2_Weights.DEFAULT
-    transform = weights.transforms()
+    # 메모리를 만들 때 쓴 입력 방식을 읽어서 같은 변환 사용 (옛 파일은 기본 = 기존 방식)
+    input_mode, input_scale = input_options_of(saved)
+    transform = make_transform(input_mode, input_scale)
+    print("입력 방식:", input_mode, "배율:", input_scale)
 
     backbone = PatchCoreBackbone(device)
 

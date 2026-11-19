@@ -1,0 +1,24 @@
+# 면취 고리 펼치기 — 쌓지 않은 긴 띠 버전 (제안값, 팀 검토 전)
+# company_polar_v1.yaml(4토막 쌓기)과 펼치는 범위·해상도는 같고, 토막으로 쌓지 않는다.
+# PatchCore를 --input-mode full 로 실행해야 띠가 잘리지 않는다 (기본 입력 변환은 가운데 224만 자름).
+# 실행: python scripts/preprocessing/company/unwrap_dataset.py --config configs/datasets/company_polarstrip_v1.yaml
+status: proposed
+
+source:
+  root: data/processed/company
+  categories: [company_cam1, company_cam2, company_cam12]
+
+# 출력: <카테고리>_polarstrip (예: company_cam1_polarstrip)
+output:
+  suffix: _polarstrip
+
+polar:
+  inner: 0.75
+  outer: 1.05
+  angle_range: [5, 260]
+  radial_px: 108
+  # 쌓지 않음 (토막 1개)
+  rows: 1
+  # 4토막 버전과 같은 가로 칸 수 (4 × 4 × 108 = 1728) → 같은 해상도로 펼침
+  # 저장 크기: 가로 1728 × 세로 108
+  columns: 1728

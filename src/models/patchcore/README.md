@@ -124,6 +124,31 @@ align_dataset.py로 만든 `<category>_aligned`도 같은 명령으로 실행합
 .\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_experiment.py --name company_aligned_validation_v1 --categories company_cam1_aligned company_cam2_aligned company_cam12_aligned --data-root data/processed/company --split validation --pcts 0.01
 ```
 
+### 면취 고리 펼치기 카테고리 (제안)
+
+unwrap_dataset.py로 만든 `<category>_polar`도 같은 명령으로 실행합니다. 분할이 원본·정렬 카테고리와 같아 세 방식을 그대로 비교할 수 있습니다.
+만드는 방법은 [산업체 데이터 전처리 안내](../../preprocessing/company/README.md)의 "면취 고리 펼치기"를 참고하세요.
+
+```powershell
+.\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_experiment.py --name company_polar_validation_v1 --categories company_cam1_polar company_cam2_polar company_cam12_polar --data-root data/processed/company --split validation --pcts 0.01
+```
+
+### 입력 방식 옵션: 자르지 않고 넣기 (`--input-mode full`)
+
+기본 입력 변환(WideResNet50 기본값)은 짧은 변을 232로 맞춘 뒤 가운데 224×224만 자릅니다. 정사각형이 아닌 이미지는 가장자리가 잘립니다.
+쌓지 않은 긴 띠(`<category>_polarstrip`, 1728×108)처럼 정사각형이 아닌 이미지는 `--input-mode full`로 실행해 전체를 자르지 않고 넣습니다.
+
+- `--input-mode center_crop` (기본): 기존과 완전히 같습니다. 옵션을 주지 않으면 이 방식입니다.
+- `--input-mode full`: 자르지 않고 `--input-scale` 배율(기본 1.0 = 원본 크기)로 크기만 바꿔 넣습니다. 정규화는 기본 변환과 같습니다.
+- 입력 방식은 `src/models/patchcore/transforms.py`의 `make_transform()` 한 곳에서 만듭니다.
+- 학습 때 쓴 입력 방식은 원본 메모리 → coreset 파일에 기록되고, 추론기(`PatchCorePredictor`)와 `run_patchcore.py`가 그 값을 읽어 같은 변환을 씁니다. 학습·평가 변환이 어긋나지 않게 하기 위해서입니다.
+- 옛 메모리 파일에는 값이 없으므로 기본 방식으로 읽습니다. 다른 방식으로 만든 메모리를 재사용하려 하면 실행기가 중단합니다(카테고리 이름을 다르게 쓰세요).
+- 이미지가 클수록 이미지당 패치 수가 늘어 메모리·시간이 늘어납니다(1728×108 원본 크기 = 이미지당 3,024 패치, 기본 224×224 = 784 패치).
+
+```powershell
+.\.venv\Scripts\python.exe scripts/patchcore/run_patchcore_experiment.py --name company_polarstrip_validation_v1 --categories company_cam1_polarstrip company_cam2_polarstrip company_cam12_polarstrip --data-root data/processed/company --split validation --pcts 0.01 --input-mode full
+```
+
 ## 정상편차 생성과 추론
 
 configs/experiments/company/의 YAML은 **모델 공통 편차 조건의 초안**입니다.
