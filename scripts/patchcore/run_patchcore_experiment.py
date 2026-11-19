@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT))
 from src.models.patchcore.batch import make_samples
 from src.evaluation.metrics import image_auroc_by_defect
 from src.models.patchcore.artifacts import file_sha256, image_group_id, input_fingerprint, train_samples
-from src.models.patchcore.threshold import effective_folds
+from src.models.patchcore.threshold import (  # 임계값 규칙 (기본 = 95% 분위수)
+    DEFAULT_THRESHOLD_QUANTILE, DEFAULT_THRESHOLD_RULE, THRESHOLD_RULES, effective_folds, threshold_tag,
+)
 from src.models.patchcore.transforms import (  # 입력 방식 (기본 = 기존 가운데 224 자르기)
     DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE, INPUT_MODES, check_input_options,
 )
@@ -28,6 +30,13 @@ def requested_input(args):
     return mode, scale
 
 
+def requested_threshold(args):
+    """이번 실행의 (임계값 규칙, 분위수). 옵션이 없는 호출(옛 코드·테스트)은 기본값으로 본다."""
+    rule = getattr(args, "threshold_rule", DEFAULT_THRESHOLD_RULE)                 # 없으면 quantile
+    quantile = float(getattr(args, "threshold_quantile", DEFAULT_THRESHOLD_QUANTILE))  # 없으면 0.95
+    return rule, quantile
+
+
 def input_options_changed(args):
     """기본(기존) 입력 방식과 다른지. 같으면 기록·비교에 넣지 않아 옛 실험 기록과 그대로 호환된다."""
     return requested_input(args) != (DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE)
@@ -37,12 +46,14 @@ def pct_name(value):
     return f"{value * 100:g}pct".replace(".", "p")
 
 
-def artifact_paths(category, percentage, projection_dim=128, seed=0, folds=10, split="test"):
+def artifact_paths(category, percentage, projection_dim=128, seed=0, folds=10, split="test",
+                   threshold_rule=DEFAULT_THRESHOLD_RULE, threshold_quantile=DEFAULT_THRESHOLD_QUANTILE):
     bank_dir = ROOT / "outputs/patchcore" / category
     tag = f"{pct_name(percentage)}_d{projection_dim}_s{seed}"
     suffix = "original" if split == "test" else split
     # 기존 기본 bottle 출력명은 유지하고, 다른 설정은 이름으로 구분한다.
     default = percentage == 0.01 and projection_dim == 128 and seed == 0
+    rule_tag = threshold_tag(threshold_rule, threshold_quantile)          # 임계값 규칙 꼬리
     prediction = ROOT / "outputs/predictions/patchcore" / (
         f"{category}_{suffix}{'' if default else '_' + tag}.csv")
     return {
@@ -50,8 +61,11 @@ def artifact_paths(category, percentage, projection_dim=128, seed=0, folds=10, s
         "coreset": bank_dir / f"coreset_raw_memory_full_{tag}.pt",
         "prediction": prediction,
         "metrics": prediction.with_name(prediction.stem + "_metrics.json"),
-        "threshold": bank_dir / f"threshold_{tag}_k{folds}.json",
-        "threshold_metrics": prediction.with_name(prediction.stem + f"_threshold_k{folds}_metrics.json"),
+        # 임계값 규칙마다 파일을 나눔 (max는 꼬리 없음 = 예전 이름, 분위수는 _q95 등)
+        "threshold": bank_dir / f"threshold_{tag}_k{folds}{rule_tag}.json",
+        "threshold_metrics": prediction.with_name(prediction.stem + f"_threshold_k{folds}{rule_tag}_metrics.json"),
+        # 번갈아 빼기 점수를 재사용할 수 있는 예전 최댓값 결과 (규칙만 다르고 점수는 같음)
+        "threshold_max": bank_dir / f"threshold_{tag}_k{folds}.json",
     }
 
 
@@ -112,6 +126,9 @@ def request_manifest(args, data_root):
     }
     if input_options_changed(args):                       # 기본과 다를 때만 실험 기록에 남김
         request["input_mode"], request["input_scale"] = requested_input(args)
+    rule, quantile = requested_threshold(args)
+    if rule != "max":                                     # 예전 실험 기록(최댓값)과 구분되게 기록
+        request["threshold_rule"], request["threshold_quantile"] = rule, quantile
     return request
 
 
@@ -130,8 +147,9 @@ def check_input_mode(raw_path, args):
 
 
 def run_one(category, percentage, args, data_root, inputs):
+    rule, quantile = requested_threshold(args)                            # 임계값 규칙
     paths = artifact_paths(category, percentage, args.projection_dim,
-                           args.seed, inputs["folds"], args.split)
+                           args.seed, inputs["folds"], args.split, rule, quantile)
     if not paths["raw"].exists():
         run("scripts/patchcore/build_patchcore_memory.py",
             "--category", category, "--data-root", data_root,
@@ -159,10 +177,18 @@ def run_one(category, percentage, args, data_root, inputs):
     if not paths["metrics"].exists():
         run("scripts/evaluation/evaluate_predictions.py", "--csv", paths["prediction"])
     if not paths["threshold"].exists():
+        reuse = []                                                        # 예전 최댓값 결과가 있으면 점수 재사용
+        if paths["threshold_max"] != paths["threshold"] and paths["threshold_max"].exists():
+            reuse = ["--from-scores", paths["threshold_max"]]
         run("scripts/patchcore/compute_patchcore_threshold.py", "--category", category,
             "--percentage", percentage, "--projection-dim", args.projection_dim, "--seed", args.seed,
-            "--folds", args.folds, "--output", paths["threshold"])
-    check_metadata(paths["threshold"], {**config, "folds": inputs["folds"]}, sidecar=False)
+            "--folds", args.folds, "--output", paths["threshold"],
+            "--rule", rule, "--quantile", quantile, *reuse)
+    # 규칙 정보가 없는 파일은 예전 최댓값 규칙으로 본다
+    expected_rule = {"rule": rule} if rule != "max" else {}
+    if rule == "quantile":
+        expected_rule["quantile"] = quantile
+    check_metadata(paths["threshold"], {**config, "folds": inputs["folds"], **expected_rule}, sidecar=False)
     if not paths["threshold_metrics"].exists():
         run("scripts/evaluation/evaluate_threshold.py", "--csv", paths["prediction"],
             "--threshold", paths["threshold"], "--category", category,
@@ -193,6 +219,8 @@ def run_one(category, percentage, args, data_root, inputs):
     }
     if input_options_changed(args):                       # 기본과 다를 때만 요약 표에 입력 방식 열 추가
         row["input_mode"], row["input_scale"] = requested_input(args)
+    if rule != "max":                                     # 예전 규칙이 아닐 때만 요약 표에 규칙 열 추가
+        row["threshold_rule"] = threshold_tag(rule, quantile).lstrip("_")   # 예: q95
     return row
 
 
@@ -224,11 +252,15 @@ def main():
     parser.add_argument("--input-mode", choices=INPUT_MODES, default=DEFAULT_INPUT_MODE)
     # full 방식의 크기 배율 (1.0 = 원본 크기 그대로)
     parser.add_argument("--input-scale", type=float, default=DEFAULT_INPUT_SCALE)
+    # 임계값 규칙: quantile(기본, 95% 분위수) / max(예전 최댓값 규칙 재현)
+    parser.add_argument("--threshold-rule", choices=THRESHOLD_RULES, default=DEFAULT_THRESHOLD_RULE)
+    parser.add_argument("--threshold-quantile", type=float, default=DEFAULT_THRESHOLD_QUANTILE)
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
         parser.error("name은 영문·숫자·밑줄·하이픈만 사용하세요.")
     try:
         check_input_options(args.input_mode, args.input_scale)   # 잘못된 조합이면 바로 중단
+        threshold_tag(args.threshold_rule, args.threshold_quantile)  # 잘못된 분위수면 바로 중단
     except ValueError as error:
         parser.error(str(error))
     output = ROOT / "outputs/patchcore/summary" / f"{args.name}.csv"

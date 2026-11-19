@@ -29,6 +29,9 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
     """
     data_root = Path(data_root).resolve()                                    # 절대 경로로 통일
     options = dict(options or {})                                            # 원본 설정을 건드리지 않게 복사
+    # 학습 정상 중 시작점 rise가 이 값보다 낮으면 학습에서 뺀다 (None이면 안 뺌 = 예전 동작)
+    # 근거: 거친 표면은 rise 120 미만에서 반지름을 4~14% 크게 잡음 (PATCHCORE_PROGRESS.md I-6)
+    exclude_below = options.pop("exclude_train_rise_below", None)            # unwrap_image에는 안 넘김
     targets = {category: f"{category}{suffix}" for category in categories}  # 입력 → 출력 이름
     if any((data_root / name).exists() for name in targets.values()):       # 덮어쓰기 방지
         raise FileExistsError("펼치기 결과 카테고리가 이미 있습니다. 새 suffix를 사용하세요.")
@@ -60,9 +63,15 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                 cam = calibration[row["camera"]]                             # 이 이미지 카메라의 대략값
                 image = read_image(source / row["prepared_image"])           # 원본 크기 이미지 읽기
                 stacked, detection = unwrap_image(image, cam["center"], cam["radius"], **options)
-                write_image(out / row["prepared_image"], stacked)            # 입력과 같은 경로로 저장
+                prepared = row["prepared_image"]                             # 제외해도 기록에 남길 원래 경로
+                excluded = bool(exclude_below is not None and row["split"] == "train"
+                                and detection["start_rise"] < exclude_below)  # 학습에서 뺄 이미지인가
+                if excluded:                                                 # 이미지는 쓰지 않고
+                    row["split"], row["prepared_image"] = "unused", ""       # split.csv에서 unused로 바꿈
+                else:
+                    write_image(out / row["prepared_image"], stacked)        # 입력과 같은 경로로 저장
                 records.append({
-                    "prepared_image": row["prepared_image"], "split": row["split"],
+                    "prepared_image": prepared, "split": row["split"],      # 제외된 행은 split=unused
                     "class": row["class"], "camera": row["camera"],
                     "center_x": round(detection["center_x"], 2),
                     "center_y": round(detection["center_y"], 2),
@@ -73,9 +82,16 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                                            or detection.get("radius_suspect", False)),
                     # 새 검출 방식(global·hole)을 켰을 때만 생기는 값 (반지름, 부품 찾기 점수 등)
                     **{k: detection[k] for k in ("radius", "coarse_radius", "coarse_score", "radius_suspect") if k in detection},
+                    **({"excluded_from_train": excluded} if exclude_below is not None else {}),  # 제외 기록
                 })
 
-            (out / "split.csv").write_bytes((source / "split.csv").read_bytes())  # 분할 그대로 복사
+            if exclude_below is None:
+                (out / "split.csv").write_bytes((source / "split.csv").read_bytes())  # 분할 그대로 복사
+            else:                                                            # 제외한 행만 unused로 바뀐 분할 저장
+                with (out / "split.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+                    writer.writeheader()
+                    writer.writerows(rows)
             with (out / "polar.csv").open("w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.DictWriter(handle, fieldnames=list(records[0]))
                 writer.writeheader()
@@ -88,6 +104,8 @@ def prepare_polar_dataset(data_root, categories, *, suffix="_polar", options=Non
                     "camera_calibration": calibration,
                     "options": {k: list(v) if isinstance(v, tuple) else v for k, v in options.items()},
                     "low_confidence_count": sum(r["low_confidence"] for r in records),
+                    "exclude_train_rise_below": exclude_below,               # 학습 제외 기준 (없으면 None)
+                    "excluded_from_train": [r["prepared_image"] for r in records if r.get("excluded_from_train")],
                 },
             })
             (out / "dataset_info.json").write_text(

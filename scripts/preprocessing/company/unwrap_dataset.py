@@ -43,6 +43,8 @@ def main():
         for key in ("center_search", "radius_from"):                               # 검출 방식 (없으면 예전 방식)
             if settings.get(key) is not None:
                 options[key] = str(settings[key])
+        if settings.get("exclude_train_rise_below") is not None:                  # 학습 제외 기준 (없으면 안 뺌)
+            options["exclude_train_rise_below"] = float(settings["exclude_train_rise_below"])
         if settings.get("columns") is not None:                                   # 가로 칸 수를 직접 정한 경우만
             options["columns"] = int(settings["columns"])                         # (없으면 정사각형 자동 계산)
         created = prepare_polar_dataset(
