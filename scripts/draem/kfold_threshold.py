@@ -52,6 +52,10 @@ def main():
     parser.add_argument("--folds", type=int, default=5, help="묶음 수 (학습 정상 장수와 같으면 leave-one-out)")
     parser.add_argument("--split-seed", type=int, default=0, help="묶음 나누기 seed")
     parser.add_argument("--keep-checkpoints", action="store_true", help="fold 모델 파일을 지우지 않음")
+    parser.add_argument("--score-offsets", type=float, nargs="+", default=[0.0],
+                        help="채점 각도 증강(°). 예: -4 -2 0 2 4 → 뺀 정상 1장을 5번 채점")
+    parser.add_argument("--rule", choices=["max", "p99", "p95", "mean3sd"], default=None,
+                        help="threshold 규칙 (기본: 증강 채점이면 p99, 아니면 max)")
 
     # train_draem.py로 그대로 넘길 학습 옵션 (최종 모델과 같게)
     train = parser.add_argument_group("학습 옵션 (최종 모델과 같게)")
@@ -63,6 +67,11 @@ def main():
     train.add_argument("--rotate-normal-prob", type=float, default=0.3)
     train.add_argument("--rotate-degrees", type=float, default=90)
     train.add_argument("--num-workers", type=int, default=4)
+    train.add_argument("--amp", action="store_true", help="bf16 혼합 정밀도 (최종 모델과 같게)")
+    train.add_argument("--clahe", action="store_true")
+    train.add_argument("--align-spring", action="store_true")
+    train.add_argument("--band-anomaly", default=None)
+    train.add_argument("--polar", action="store_true")
     train.add_argument("--anomaly-source", type=Path, default=Path("data/raw/dtd/images"))
     args = parser.parse_args()
 
@@ -81,8 +90,14 @@ def main():
     random.Random(args.split_seed).shuffle(order)
     folds = [order[i::args.folds] for i in range(args.folds)]
 
+    if args.rule is None:
+        args.rule = "p99" if len(args.score_offsets) > 1 else "max"
+
     length = f"st{args.steps}" if args.steps is not None else f"e{args.epochs}"
     setting = f"{length}_rot{args.rotate_normal_prob:g}x{args.rotate_degrees:g}_s{args.seed}".replace(".", "p")
+    setting += ("_clahe" if args.clahe else "") + ("_align" if args.align_spring else "") + ("_band" if args.band_anomaly else "") + ("_polar" if args.polar else "")
+    if len(args.score_offsets) > 1 or args.rule != "max":
+        setting += f"_aug{len(args.score_offsets)}_{args.rule}"
     work_dir = ROOT / "outputs/draem" / args.category / "threshold" / f"k{args.folds}_{setting}"
     result_path = work_dir.parent / f"threshold_k{args.folds}_{setting}.json"
     if result_path.exists():
@@ -96,7 +111,13 @@ def main():
     import torch
     from src.models.draem.model import DRAEMPredictor
 
-    scores = {}
+    from src.models.draem.edge_mask import MASK_VARIANTS, load_edge_mask, masked_score
+    variants = {k: resolve(args.data_root) / args.category / d for k, (d, _) in MASK_VARIANTS.items()
+                if (resolve(args.data_root) / args.category / d).is_dir()}
+    if variants:
+        print("마스크 있음 → 마스크별 threshold도 함께 계산:", ", ".join(variants))
+
+    scores, scores_mask = {}, {k: {} for k in variants}
     for k, held_out in enumerate(folds):
         print(f"\n--- fold {k + 1}/{args.folds}: {len(held_out)}장 빼고 {len(images) - len(held_out)}장으로 학습 ---")
 
@@ -113,13 +134,35 @@ def main():
             "--save-every", "0",
         ]
         cmd += ["--steps", str(args.steps)] if args.steps is not None else ["--epochs", str(args.epochs)]
-        subprocess.run(cmd, check=True, cwd=ROOT)
+        if args.amp:
+            cmd.append("--amp")
+        if args.clahe:
+            cmd.append("--clahe")
+        if args.align_spring:
+            cmd.append("--align-spring")
+        if args.band_anomaly:
+            cmd += ["--band-anomaly", args.band_anomaly]
+        if args.polar:
+            cmd.append("--polar")
+        done = list(work_dir.glob(f"draem_*_fold{k}.pt"))
+        if done:  # 중간에 끊겼다가 다시 돌릴 때: 이미 학습한 fold는 건너뜀
+            print(f"  이미 학습된 모델 사용: {done[0].name}")
+        else:
+            subprocess.run(cmd, check=True, cwd=ROOT)
 
         ckpt = next(work_dir.glob(f"draem_*_fold{k}.pt"))
         model = DRAEMPredictor(ckpt)
         for name in held_out:
-            scores[name] = model.predict(train_dir / name)["image_score"]
-            print(f"  채점 {name}: {scores[name]:.4f}")
+            for off in args.score_offsets:
+                key_name = name if len(args.score_offsets) == 1 else f"{name}@{off:g}"
+                r = model.predict(train_dir / name, offset=off)
+                scores[key_name] = r["image_score"]
+                msg = f"  채점 {key_name}: {scores[key_name]:.4f}"
+                for key, mdir in variants.items():
+                    mask = load_edge_mask(mdir / f"{Path(name).stem}.png", int(r["anomaly_map"].shape[-1]))
+                    scores_mask[key][key_name], _ = masked_score(r["anomaly_map"].numpy(), mask, model.score_kernel)
+                    msg += f" · {key} {scores_mask[key][key_name]:.4f}"
+                print(msg)
 
         del model
         if torch.cuda.is_available():
@@ -127,26 +170,41 @@ def main():
         if not args.keep_checkpoints:
             ckpt.unlink()
 
-    # 2. threshold = 학습에 쓰지 않은 정상 점수의 최댓값
+    # 2. threshold = 학습에 쓰지 않은 정상 점수에 규칙 적용 (기본 최댓값, 증강 채점이면 99% 지점)
+    def apply_rule(v):
+        v = np.asarray(list(v), dtype=float)
+        if args.rule == "max":
+            return float(v.max())
+        if args.rule == "mean3sd":
+            return float(v.mean() + 3 * v.std(ddof=1))
+        return float(np.percentile(v, 99 if args.rule == "p99" else 95))
+
     values = np.array(list(scores.values()))
-    threshold = float(values.max())
+    threshold = apply_rule(values)
 
     result = {
         "category": args.category,
         "data_root": args.data_root.as_posix(),
         "threshold": threshold,
-        "rule": "max of out-of-fold normal scores",
-        "score_stats": {"min": float(values.min()), "mean": float(values.mean()),
-                        "max": threshold, "p95": float(np.percentile(values, 95))},
+        "rule": f"{args.rule} of out-of-fold normal scores"
+                + (f" (각도 증강 {len(args.score_offsets)}회: {args.score_offsets})" if len(args.score_offsets) > 1 else ""),
+        "score_stats": {"min": float(values.min()), "mean": float(values.mean()), "std": float(values.std(ddof=1)),
+                        "max": float(values.max()), "p99": float(np.percentile(values, 99)),
+                        "p95": float(np.percentile(values, 95))},
         "folds": folds,
         "scores": scores,
         "train": {k: (v.as_posix() if isinstance(v, Path) else v) for k, v in vars(args).items()},
     }
+    for key, sc in scores_mask.items():
+        result[f"threshold_{key}"] = apply_rule(sc.values())
+        result[f"scores_{key}"] = sc
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("\n=== 완료 ===")
-    print(f"정상 점수 (학습에 안 쓴 모델로 채점): 최소 {values.min():.4f} · 평균 {values.mean():.4f} · 최대 {threshold:.4f}")
-    print(f"threshold = {threshold:.4f}")
+    print(f"정상 점수 {len(values)}개 (학습에 안 쓴 모델로 채점): 최소 {values.min():.4f} · 평균 {values.mean():.4f} · 최대 {values.max():.4f}")
+    print(f"threshold ({args.rule}) = {threshold:.4f}")
+    for key in scores_mask:
+        print(f"threshold_{key} = {result[f'threshold_{key}']:.4f}")
     print(f"저장: {result_path}")
 
 

@@ -73,6 +73,11 @@ def build_checkpoint(args, rec, seg, epoch, step, image_paths, elapsed):
         "anomaly_source": args.anomaly_source.as_posix(),
         "rotate_normal_prob": args.rotate_normal_prob,
         "rotate_degrees": args.rotate_degrees,
+        "clahe": args.clahe,
+        "align_spring": args.align_spring,
+        "band_anomaly": args.band_anomaly or "",
+        "polar": args.polar,
+        "rect": list(args.rect) if args.rect else [],
         "tag": args.tag,
         "train_seconds": round(elapsed, 1),
         "method": "draem",
@@ -90,12 +95,23 @@ def main():
     parser.add_argument("--steps", type=int, default=None,
                         help="총 학습 횟수(step). 지정하면 --epochs 대신 사용 (정상 이미지가 적을 때)")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--amp", action="store_true",
+                        help="bf16 혼합 정밀도 (GPU 메모리 약 절반, 8GB GPU에서 속도 개선)")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--rotate-normal-prob", type=float, default=0.3,
                         help="정상 학습 이미지 회전 확률 (원본 0.3, 끄려면 0)")
     parser.add_argument("--rotate-degrees", type=float, default=90,
                         help="정상 회전 범위 ±N도 (원본 90, 전 방향은 180)")
+    parser.add_argument("--clahe", action="store_true", help="조명 정규화 (밝기 채널 CLAHE). 추론에도 자동 적용")
+    parser.add_argument("--align-spring", action="store_true",
+                        help="스프링 시작점 기준 정렬. 추론에도 자동 적용 (회전 증강은 --rotate-degrees 5 정도로 작게)")
+    parser.add_argument("--band-anomaly", default=None, metavar="MASK_DIR",
+                        help="가짜 결함을 이 마스크 폴더(예: edge_masks_ex) 안에만 합성 (+6px 여유)")
+    parser.add_argument("--polar", action="store_true",
+                        help="테두리 띠 펴기: 스프링 시작점 정렬 + 제외 구간(-5°~100°) 잘라 낸 128×512 띠로 학습 · 추론")
+    parser.add_argument("--rect", type=int, nargs=2, default=None, metavar=("H", "W"),
+                        help="이미 펴진 직사각형 띠 이미지를 (높이, 너비)로 줄여 학습 (예: 키트 띠 108×1728 → 128 512). 회전 증강 없음")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--limit", type=int, default=None, help="디버그용: 정상 이미지 개수 제한")
@@ -111,6 +127,16 @@ def main():
 
     if args.image_size % 32 != 0:
         parser.error("--image-size는 32의 배수여야 합니다. (U-Net 5단계 다운샘플링)")
+
+    if args.polar and args.band_anomaly:
+        parser.error("--polar와 --band-anomaly는 함께 쓸 수 없습니다.")
+    if args.polar:
+        args.align_spring = False  # 띠 펴기에 정렬이 들어 있음
+    if args.rect:
+        if any(v % 32 for v in args.rect):
+            parser.error("--rect 높이·너비는 32의 배수여야 합니다.")
+        if args.polar or args.align_spring or args.band_anomaly:
+            parser.error("--rect 는 --polar · --align-spring · --band-anomaly 와 함께 쓸 수 없습니다.")
 
     # 1. 정상 학습 이미지 / 이상 소스 이미지
     train_dir = resolve(args.data_root) / args.category / "train/good"
@@ -143,6 +169,11 @@ def main():
         image_size=args.image_size,
         rotate_normal_prob=args.rotate_normal_prob,
         rotate_degrees=args.rotate_degrees,
+        clahe=args.clahe,
+        align=args.align_spring,
+        band_dir=(resolve(args.data_root) / args.category / args.band_anomaly) if args.band_anomaly else None,
+        polar=args.polar,
+        rect=args.rect,
     )
     loader = DataLoader(
         dataset,
@@ -167,6 +198,18 @@ def main():
     stem = f"draem_{length}_bs{args.batch_size}_lr{lr_name}_s{args.seed}"
     if args.rotate_normal_prob != 0.3 or args.rotate_degrees != 90:
         stem += f"_rot{args.rotate_normal_prob:g}x{args.rotate_degrees:g}".replace(".", "p")
+    if args.clahe:
+        stem += "_clahe"
+    if args.align_spring:
+        stem += "_align"
+    if args.band_anomaly:
+        stem += "_band"
+    if args.polar:
+        stem += "_polar"
+    if args.rect:
+        stem += f"_rect{args.rect[0]}x{args.rect[1]}"
+    if args.amp:
+        stem += "_amp"
     if args.limit is not None:
         stem += f"_debug{args.limit}"
     if args.tag:
@@ -208,6 +251,9 @@ def main():
     print("이상 소스 이미지:", len(source_paths))
     print(f"학습량: {args.epochs} epoch × {steps_per_epoch} step = {args.epochs * steps_per_epoch} step")
     print(f"정상 회전 증강: 확률 {args.rotate_normal_prob}, ±{args.rotate_degrees:g}°")
+    print(f"조명 정규화: {'켜짐' if args.clahe else '꺼짐'} · 스프링 시작점 정렬: {'켜짐' if args.align_spring else '꺼짐'}"
+          f" · 가짜 결함 위치: {args.band_anomaly + ' 안' if args.band_anomaly else '이미지 전체'}"
+          f" · 띠 펴기: {'켜짐 (128×512, 시작점 정렬 포함)' if args.polar else '꺼짐'}")
     print("저장 위치:", output_path)
 
     # 5. 학습
@@ -224,9 +270,12 @@ def main():
             augmented = batch["augmented_image"].to(device, non_blocking=True)
             mask = batch["anomaly_mask"].to(device, non_blocking=True)
 
-            reconstruction = rec(augmented)
-            joined = torch.cat((reconstruction, augmented), dim=1)
-            mask_prob = torch.softmax(seg(joined), dim=1)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.amp and device.type == "cuda"):
+                reconstruction = rec(augmented)
+                joined = torch.cat((reconstruction, augmented), dim=1)
+                logits = seg(joined)
+            reconstruction = reconstruction.float()  # 손실은 fp32로 계산
+            mask_prob = torch.softmax(logits.float(), dim=1)
 
             loss_l2 = l2_loss(reconstruction, image)
             loss_ssim = ssim_loss(reconstruction, image)
@@ -253,7 +302,8 @@ def main():
             print(
                 f"[{epoch}/{args.epochs} · step {step}] total={sums['total'] / n:.4f} "
                 f"l2={sums['l2'] / n:.4f} ssim={sums['ssim'] / n:.4f} "
-                f"focal={sums['focal'] / n:.4f} ({elapsed / 60:.1f}분)"
+                f"focal={sums['focal'] / n:.4f} ({elapsed / 60:.1f}분 · {elapsed / max(step, 1):.2f}초/step"
+                + (f" · GPU {torch.cuda.max_memory_allocated() / 2**30:.1f}GB" if device.type == "cuda" else "") + ")"
             )
 
         if save_every and epoch % save_every == 0 and epoch != args.epochs:

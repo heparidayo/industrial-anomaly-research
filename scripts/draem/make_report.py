@@ -6,6 +6,11 @@
 예시:
     .\\.venv\\Scripts\\python.exe scripts/draem/make_report.py --categories camera_1 camera_2 cam12
 
+    # 테두리 마스크 적용 (make_edge_masks.py 먼저) → outputs/report/company_edge
+    .\\.venv\\Scripts\\python.exe scripts/draem/make_report.py --categories camera_1 camera_2 cam12 --mask edge
+    # 스프링 시작점 -5°~100° 제외 → outputs/report/company_edge_ex
+    .\\.venv\\Scripts\\python.exe scripts/draem/make_report.py --categories camera_1 camera_2 cam12 --mask edge_ex
+
     # MVTec bottle (결과는 따로 모음)
     .\\.venv\\Scripts\\python.exe scripts/draem/make_report.py --data-root data/raw/mvtec_ad --categories bottle --out outputs/report/mvtec
 
@@ -56,11 +61,15 @@ def newest(folder: Path, pattern: str, exclude=("_last", "timing", "debug")):
 
 # ── 그림 ────────────────────────────────────────────────────
 
-def panels(image: np.ndarray, amap: np.ndarray) -> np.ndarray:
-    """image: (H, W, 3) BGR 0~1, amap: (H, W) 0~1 → 원본 | 히트맵 | 겹침 한 줄."""
+def panels(image: np.ndarray, amap: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    """image: (H, W, 3) BGR 0~1, amap: (H, W) 0~1 → 원본 | 히트맵 | 겹침 한 줄. mask가 있으면 경계선을 흰색으로."""
     orig = (np.clip(image, 0, 1) * 255).astype(np.uint8)
     heat = cv2.applyColorMap((np.clip(amap, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
     overlay = cv2.addWeighted(orig, 0.55, heat, 0.45, 0)
+    if mask is not None:
+        contours, _ = cv2.findContours((mask > 0).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        for t in (heat, overlay):
+            cv2.drawContours(t, contours, -1, (255, 255, 255), 1)
     tiles = [cv2.resize(t, (PANEL, PANEL), interpolation=cv2.INTER_LINEAR) for t in (orig, heat, overlay)]
     gap = np.full((PANEL, GAP, 3), 255, np.uint8)
     return np.hstack([tiles[0], gap, tiles[1], gap, tiles[2]])
@@ -91,8 +100,11 @@ def grid(rows: list[np.ndarray]) -> np.ndarray:
 
 # ── 카테고리 하나 처리 ──────────────────────────────────────
 
-def run_category(model, test_dir: Path, out_dir: Path, threshold: float | None):
-    """model.predict(path) → {image_score, anomaly_map, image} 를 쓰는 어떤 모델이든 동작."""
+def run_category(model, test_dir: Path, out_dir: Path, threshold: float | None, mask_dir: Path | None = None):
+    """model.predict(path) → {image_score, anomaly_map, image} 를 쓰는 어떤 모델이든 동작.
+
+    mask_dir가 있으면 결함 맵에서 테두리 마스크 밖을 0으로 만들고 점수를 다시 계산합니다.
+    """
     paths = sorted(test_dir.glob("*/*.png"))
     if not paths:
         raise SystemExit(f"테스트 이미지가 없습니다: {test_dir}")
@@ -102,6 +114,12 @@ def run_category(model, test_dir: Path, out_dir: Path, threshold: float | None):
     for p in paths:
         start = time.perf_counter()
         r = model.predict(p)
+        mask = None
+        if mask_dir is not None:
+            from src.models.draem.edge_mask import load_edge_mask, masked_score
+            mask = load_edge_mask(mask_dir / f"{p.stem}.png", int(r["anomaly_map"].shape[-1]))
+            amap_np = r["anomaly_map"].numpy() if hasattr(r["anomaly_map"], "numpy") else np.asarray(r["anomaly_map"])
+            r["image_score"], r["anomaly_map"] = masked_score(amap_np, mask, getattr(model, "score_kernel", 21))
         ms = (time.perf_counter() - start) * 1000
         dtype = p.parent.name
         records.append({
@@ -112,7 +130,7 @@ def run_category(model, test_dir: Path, out_dir: Path, threshold: float | None):
         })
         amap = r["anomaly_map"]
         amap = amap.numpy() if hasattr(amap, "numpy") else np.asarray(amap)
-        cache[p] = (r["image"], amap, r["image_score"], dtype)
+        cache[p] = (r["image"], amap, r["image_score"], dtype, mask)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "predictions.csv"
@@ -140,8 +158,8 @@ def run_category(model, test_dir: Path, out_dir: Path, threshold: float | None):
         median = items[len(items) // 2][1]
         hardest = items[-1][1] if cls == "good" else items[0][1]
         for kind, p, bucket in (("typical", median, typical_rows), ("hardest", hardest, hardest_rows)):
-            image, amap, score, _ = cache[p]
-            row = with_header(panels(image, amap), f"{cls}  score {score:.3f}{verdict(score, cls)}  ({p.stem[-20:]})")
+            image, amap, score, _, mask = cache[p]
+            row = with_header(panels(image, amap, mask), f"{cls}  score {score:.3f}{verdict(score, cls)}  ({p.stem[-20:]})")
             bucket.append(row)
             cv2.imwrite(str(case_dir / f"{kind}_{cls}_{p.stem}.png"), row)
 
@@ -191,8 +209,18 @@ def main():
     parser.add_argument("--categories", nargs="+", default=["camera_1", "camera_2", "cam12"])
     parser.add_argument("--checkpoints", type=Path, nargs="*", default=None)
     parser.add_argument("--threshold-jsons", type=Path, nargs="*", default=None)
-    parser.add_argument("--out", type=Path, default=Path("outputs/report/company"))
+    parser.add_argument("--out", type=Path, default=None,
+                        help="기본: outputs/report/company (--edge-mask면 outputs/report/company_edge)")
+    parser.add_argument("--edge-mask", action="store_true", help="--mask edge 와 같음")
+    parser.add_argument("--mask", choices=["edge", "edge_ex", "ring_ex"], default=None,
+                        help="edge = 테두리만, edge_ex = 테두리에서 스프링 시작점 -5°~100° 제외 (make_edge_masks.py 먼저), "
+                             "ring_ex = 라벨 없이 만든 고정 폭 링 − 시작점 (make_ring_masks.py 먼저)")
     args = parser.parse_args()
+    if args.edge_mask and args.mask is None:
+        args.mask = "edge"
+    from src.models.draem.edge_mask import MASK_VARIANTS
+    if args.out is None:
+        args.out = Path("outputs/report/company" + (f"_{args.mask}" if args.mask else ""))
 
     from src.models.draem.model import DRAEMPredictor  # torch는 여기서만 필요
 
@@ -206,16 +234,21 @@ def main():
             print(f"[건너뜀] {cat}: 체크포인트가 없습니다.")
             continue
         tj = resolve(args.threshold_jsons[i]) if args.threshold_jsons else newest(ROOT / "outputs/draem" / cat / "threshold", "*.json")
-        threshold = float(json.loads(tj.read_text(encoding="utf-8"))["threshold"]) if tj and tj.is_file() else None
+        th_key = f"threshold_{args.mask}" if args.mask else "threshold"
+        th_data = json.loads(tj.read_text(encoding="utf-8")) if tj and tj.is_file() else {}
+        threshold = float(th_data[th_key]) if th_key in th_data else None
+        if tj and tj.is_file() and threshold is None:
+            print(f"  ({tj.name}에 {th_key}가 없습니다. k-fold를 마스크를 만든 뒤 다시 돌려야 합니다.)")
 
         print(f"\n=== {cat} ===")
         print("체크포인트:", ckpt.name)
         print("threshold:", f"{threshold:.4f} ({tj.name})" if threshold is not None else "없음 (과검률 · 미검률 생략)")
 
         model = DRAEMPredictor(ckpt)
-        csv_path = run_category(model, resolve(args.data_root) / cat / "test", out_root / cat, threshold)
+        mask_dir = resolve(args.data_root) / cat / MASK_VARIANTS[args.mask][0] if args.mask else None
+        csv_path = run_category(model, resolve(args.data_root) / cat / "test", out_root / cat, threshold, mask_dir)
         r = evaluate(csv_path, threshold)
-        r["dataset"] = cat
+        r["dataset"] = cat + (f" ({MASK_VARIANTS[args.mask][1]})" if args.mask else "")
         r["checkpoint"] = ckpt.name
         results.append(r)
         print(f"AUROC {r['image_auroc']:.3f} · 과검률 {r.get('false_alarm', '-')} · "

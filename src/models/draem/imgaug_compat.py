@@ -8,7 +8,7 @@ imgaug 0.4.0은 NumPy 2.0에서 제거된 ``np.sctypes`` 등을 import 시점에
 
 DRAEM 코드에서는 imgaug를 직접 import하지 말고 아래처럼 사용하세요.
 
-    from src.models.draem.imgaug_compat import iaa, Autocontrast
+    from src.models.draem.imgaug_compat import iaa, Autocontrast, apply_chain
 """
 
 import warnings
@@ -24,9 +24,6 @@ if not hasattr(np, "sctypes"):
         "complex": [np.complex64, np.complex128],
         "others": [bool, object, bytes, str, np.void],
     }
-# np.sctypes는 Numpy 2.x에서 제거되었는데 imgaug는 import될 때 이 값을 읽어 어떤 자료형이 정수/실수인지 목록을 만듬.
-# if not hasattr(...): NumPy에 이미 있으면 건드리지 않습니다. NumPy 1.x 환경에서도 안전
-# np.object, np.int 같은 예전 이름을 예방 차원에서 채웁니다. NumPy 2에서는 이 이름을 확인하는 것만으로도 경고가 떠서, 확인하는 구간만 경고를 숨김.
 
 # NumPy 1.24+에서 제거된 내장형 별칭 (imgaug 내부 일부 경로에서 참조)
 # hasattr 검사 자체가 NumPy 2.x에서 FutureWarning을 내므로 경고를 숨깁니다.
@@ -47,13 +44,27 @@ def _autocontrast_images(images, random_state, parents, hooks):
     result = []
     for image, cutoff in zip(images, cutoffs):
         pil = Image.fromarray(np.ascontiguousarray(image))
-        result.append(np.asarray(ImageOps.autocontrast(pil, cutoff=int(cutoff))))
+        # np.asarray(PIL)은 읽기 전용 → 다음 augmenter가 제자리 수정하면 오류. np.array로 복사
+        result.append(np.array(ImageOps.autocontrast(pil, cutoff=int(cutoff))))
     return result
-# PIL 원래 함수를 직접 호출
+
 
 def Autocontrast():  # noqa: N802  (imgaug augmenter처럼 쓰도록 대문자 이름)
     """iaa.pillike.Autocontrast(cutoff=(0, 20)) 대체."""
     return iaa.Lambda(func_images=_autocontrast_images, name="Autocontrast")
-# 위 함수를 ingaug 변환 형태로 감싸서 원래 쓰던 자리에 그대로 넣을 수 있게 함
 
-__all__ = ["ia", "iaa", "Autocontrast"]
+
+def apply_chain(augmenters, image):
+    """augmenter들을 순서대로 적용. 단계마다 쓰기 가능한 배열로 복사.
+
+    pillike 계열(EnhanceSharpness 등)과 Autocontrast는 PIL에서 돌아온 읽기 전용 배열을
+    내보낼 수 있고, Equalize · Invert · Solarize 등은 입력을 제자리에서 수정합니다.
+    NumPy 2에서는 이 조합이 "assignment destination is read-only" 오류를 내므로
+    iaa.Sequential 대신 이 함수를 씁니다 (적용 순서와 결과는 Sequential과 같음).
+    """
+    for aug in augmenters:
+        image = np.array(aug(image=np.array(image)))
+    return image
+
+
+__all__ = ["ia", "iaa", "Autocontrast", "apply_chain"]
