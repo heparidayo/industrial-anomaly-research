@@ -1,0 +1,5 @@
+# PatchCore 담당 추가 의존성 (공용 requirements.txt 설치 후)
+#   .\.venv\Scripts\python.exe -m pip install -r requirements-patchcore.txt
+#
+# 결과 그래프 생성용 (scripts/patchcore/plot_patchcore_results.py)
+matplotlib>=3.8,<4

@@ -1,0 +1,303 @@
+"""PatchCore 실행을 묶고 공통 평가기를 호출한다. 모델 재구현은 포함하지 않는다."""
+import argparse
+import csv
+import hashlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from src.models.patchcore.batch import make_samples
+from src.evaluation.metrics import image_auroc_by_defect
+from src.models.patchcore.artifacts import file_sha256, image_group_id, input_fingerprint, train_samples
+from src.models.patchcore.threshold import (  # 임계값 규칙 (기본 = 95% 분위수)
+    DEFAULT_THRESHOLD_QUANTILE, DEFAULT_THRESHOLD_RULE, THRESHOLD_RULES, effective_folds, threshold_tag,
+)
+from src.models.patchcore.transforms import (  # 입력 방식 (기본 = 기존 가운데 224 자르기)
+    DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE, INPUT_MODES, check_input_options,
+)
+
+
+def requested_input(args):
+    """이번 실행의 (입력 방식, 배율). 옵션이 없는 호출(옛 코드·테스트)은 기본값으로 본다."""
+    mode = getattr(args, "input_mode", DEFAULT_INPUT_MODE)               # 없으면 center_crop
+    scale = float(getattr(args, "input_scale", DEFAULT_INPUT_SCALE))     # 없으면 1.0
+    return mode, scale
+
+
+def requested_threshold(args):
+    """이번 실행의 (임계값 규칙, 분위수). 옵션이 없는 호출(옛 코드·테스트)은 기본값으로 본다."""
+    rule = getattr(args, "threshold_rule", DEFAULT_THRESHOLD_RULE)                 # 없으면 quantile
+    quantile = float(getattr(args, "threshold_quantile", DEFAULT_THRESHOLD_QUANTILE))  # 없으면 0.95
+    return rule, quantile
+
+
+def input_options_changed(args):
+    """기본(기존) 입력 방식과 다른지. 같으면 기록·비교에 넣지 않아 옛 실험 기록과 그대로 호환된다."""
+    return requested_input(args) != (DEFAULT_INPUT_MODE, DEFAULT_INPUT_SCALE)
+
+
+def pct_name(value):
+    return f"{value * 100:g}pct".replace(".", "p")
+
+
+def artifact_paths(category, percentage, projection_dim=128, seed=0, folds=10, split="test",
+                   threshold_rule=DEFAULT_THRESHOLD_RULE, threshold_quantile=DEFAULT_THRESHOLD_QUANTILE):
+    bank_dir = ROOT / "outputs/patchcore" / category
+    tag = f"{pct_name(percentage)}_d{projection_dim}_s{seed}"
+    suffix = "original" if split == "test" else split
+    # 기존 기본 bottle 출력명은 유지하고, 다른 설정은 이름으로 구분한다.
+    default = percentage == 0.01 and projection_dim == 128 and seed == 0
+    rule_tag = threshold_tag(threshold_rule, threshold_quantile)          # 임계값 규칙 꼬리
+    prediction = ROOT / "outputs/predictions/patchcore" / (
+        f"{category}_{suffix}{'' if default else '_' + tag}.csv")
+    return {
+        "raw": bank_dir / "raw_memory_full.pt",
+        "coreset": bank_dir / f"coreset_raw_memory_full_{tag}.pt",
+        "prediction": prediction,
+        "metrics": prediction.with_name(prediction.stem + "_metrics.json"),
+        # 임계값 규칙마다 파일을 나눔 (max는 꼬리 없음 = 예전 이름, 분위수는 _q95 등)
+        "threshold": bank_dir / f"threshold_{tag}_k{folds}{rule_tag}.json",
+        "threshold_metrics": prediction.with_name(prediction.stem + f"_threshold_k{folds}{rule_tag}_metrics.json"),
+        # 번갈아 빼기 점수를 재사용할 수 있는 예전 최댓값 결과 (규칙만 다르고 점수는 같음)
+        "threshold_max": bank_dir / f"threshold_{tag}_k{folds}.json",
+    }
+
+
+def check_metadata(path, expected, *, sidecar=True):
+    source = path.with_suffix(path.suffix + ".meta.json") if sidecar else path
+    if not source.is_file():
+        raise ValueError(f"출처 메타데이터가 없습니다. 기존 결과를 확인하고 새 실험으로 분리하세요: {path}")
+    actual = json.loads(source.read_text(encoding="utf-8"))
+    if any(actual.get(key) != value for key, value in expected.items()):
+        raise ValueError(f"결과와 현재 입력·설정이 다릅니다: {path}")
+
+
+def run(script, *args):
+    command = [sys.executable, str(ROOT / script), *map(str, args)]
+    print("실행:", script, flush=True)
+    result = subprocess.run(command, cwd=ROOT, capture_output=True,
+                            text=True, encoding="utf-8",
+                            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    if result.returncode:
+        raise RuntimeError(f"하위 실행 실패: {script}\n{result.stdout[-2000:]}\n{result.stderr[-2000:]}")
+
+
+def request_manifest(args, data_root):
+    if args.projection_dim < 1:
+        raise ValueError("투영 차원은 양수여야 합니다.")
+    if not args.categories or len(set(args.categories)) != len(args.categories):
+        raise ValueError("중복되지 않는 --categories 목록이 필요합니다.")
+    if len(set(args.pcts)) != len(args.pcts) or not all(0 < value <= 1 for value in args.pcts):
+        raise ValueError("Coreset 비율은 중복되지 않는 (0, 1] 값이어야 합니다.")
+    inputs = {}
+    for category in args.categories:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", category):
+            raise ValueError("카테고리 이름에 경로를 넣을 수 없습니다.")
+        paths = sorted((data_root / category / "train/good").glob("*.png"))
+        samples = make_samples(data_root, category, args.split, project_root=ROOT)
+        if not paths or not samples:
+            raise ValueError(f"{category}: 학습·{args.split} 입력이 없습니다.")
+        groups = [image_group_id(path.name) for path in paths]
+        folds = effective_folds(groups, args.folds)
+        inputs[category] = {
+            "train_fingerprint": input_fingerprint(train_samples(paths)),
+            "eval_fingerprint": input_fingerprint(samples), "folds": folds,
+            "split_manifest_sha256": file_sha256(data_root / category / "split.csv")
+                if (data_root / category / "split.csv").is_file() else None,
+            "dataset_info_sha256": file_sha256(data_root / category / "dataset_info.json")
+                if (data_root / category / "dataset_info.json").is_file() else None,
+        }
+    code_files = list((ROOT / "src/models/patchcore").glob("*.py"))
+    code_files += list((ROOT / "src/evaluation").glob("*.py"))
+    code_files += list((ROOT / "scripts/patchcore").glob("*.py"))
+    code_files += list((ROOT / "scripts/evaluation").glob("*.py"))
+    code_hash = hashlib.sha256("".join(file_sha256(p) for p in sorted(code_files)).encode()).hexdigest()
+    request = {
+        "data_root": str(data_root), "split": args.split, "categories": args.categories,
+        "percentages": args.pcts, "projection_dim": args.projection_dim, "seed": args.seed,
+        "requested_folds": args.folds, "inputs": inputs, "code_sha256": code_hash,
+        "python": sys.version, "torch": importlib.metadata.version("torch"),
+    }
+    if input_options_changed(args):                       # 기본과 다를 때만 실험 기록에 남김
+        request["input_mode"], request["input_scale"] = requested_input(args)
+    rule, quantile = requested_threshold(args)
+    if rule != "max":                                     # 예전 실험 기록(최댓값)과 구분되게 기록
+        request["threshold_rule"], request["threshold_quantile"] = rule, quantile
+    return request
+
+
+def check_input_mode(raw_path, args):
+    """이미 있는 원본 메모리가 이번 실행과 같은 입력 방식으로 만들어졌는지 확인한다.
+
+    다른 방식으로 만든 메모리를 재사용하면 학습·평가 변환이 어긋나므로 중단한다.
+    (옛 메모리 기록에는 값이 없으므로 기본값 = 기존 방식으로 본다)
+    """
+    meta = json.loads(raw_path.with_suffix(raw_path.suffix + ".meta.json").read_text(encoding="utf-8"))  # 원본 메모리 기록
+    mode = meta.get("input_mode", DEFAULT_INPUT_MODE)                  # 저장된 입력 방식
+    scale = float(meta.get("input_scale", DEFAULT_INPUT_SCALE))        # 저장된 배율
+    if (mode, scale) != requested_input(args):
+        raise ValueError(f"메모리의 입력 방식({mode}, {scale})이 요청{requested_input(args)}과 다릅니다. "
+                         f"다른 카테고리 이름을 사용하세요: {raw_path}")
+
+
+def run_one(category, percentage, args, data_root, inputs):
+    rule, quantile = requested_threshold(args)                            # 임계값 규칙
+    paths = artifact_paths(category, percentage, args.projection_dim,
+                           args.seed, inputs["folds"], args.split, rule, quantile)
+    if not paths["raw"].exists():
+        run("scripts/patchcore/build_patchcore_memory.py",
+            "--category", category, "--data-root", data_root,
+            "--input-mode", requested_input(args)[0], "--input-scale", requested_input(args)[1])  # 입력 방식 전달
+    check_metadata(paths["raw"], {"category": category,
+                                  "data_root": str(data_root),
+                                  "input_fingerprint": inputs["train_fingerprint"]})
+    check_input_mode(paths["raw"], args)                  # 학습·평가 입력 방식 일치 확인
+    config = {"category": category, "percentage": percentage,
+              "projection_dim": args.projection_dim, "seed": args.seed,
+              "raw_memory_sha256": file_sha256(paths["raw"])}
+    if not paths["coreset"].exists():
+        run("scripts/patchcore/build_patchcore_coreset.py", "--input", paths["raw"],
+            "--percentage", percentage, "--projection-dim", args.projection_dim, "--seed", args.seed)
+    check_metadata(paths["coreset"], config)
+    if not paths["prediction"].exists():
+        run("scripts/patchcore/run_patchcore_batch.py", "--category", category,
+            "--data-root", data_root, "--split", args.split, "--memory", paths["coreset"],
+            "--output", paths["prediction"])
+    check_metadata(paths["prediction"], {
+        "category": category, "split": args.split,
+        "input_fingerprint": inputs["eval_fingerprint"],
+        "memory_sha256": file_sha256(paths["coreset"]),
+    })
+    if not paths["metrics"].exists():
+        run("scripts/evaluation/evaluate_predictions.py", "--csv", paths["prediction"])
+    if not paths["threshold"].exists():
+        reuse = []                                                        # 예전 최댓값 결과가 있으면 점수 재사용
+        if paths["threshold_max"] != paths["threshold"] and paths["threshold_max"].exists():
+            reuse = ["--from-scores", paths["threshold_max"]]
+        run("scripts/patchcore/compute_patchcore_threshold.py", "--category", category,
+            "--percentage", percentage, "--projection-dim", args.projection_dim, "--seed", args.seed,
+            "--folds", args.folds, "--output", paths["threshold"],
+            "--rule", rule, "--quantile", quantile, *reuse)
+    # 규칙 정보가 없는 파일은 예전 최댓값 규칙으로 본다
+    expected_rule = {"rule": rule} if rule != "max" else {}
+    if rule == "quantile":
+        expected_rule["quantile"] = quantile
+    check_metadata(paths["threshold"], {**config, "folds": inputs["folds"], **expected_rule}, sidecar=False)
+    if not paths["threshold_metrics"].exists():
+        run("scripts/evaluation/evaluate_threshold.py", "--csv", paths["prediction"],
+            "--threshold", paths["threshold"], "--category", category,
+            "--output", paths["threshold_metrics"])
+    threshold_info = json.loads(paths["threshold"].read_text(encoding="utf-8"))
+    check_metadata(paths["threshold_metrics"], {
+        "csv": str(paths["prediction"]), "threshold_file": str(paths["threshold"]),
+        "threshold": threshold_info["threshold"],
+    }, sidecar=False)
+    metrics = json.loads(paths["metrics"].read_text(encoding="utf-8"))
+    fixed = json.loads(paths["threshold_metrics"].read_text(encoding="utf-8"))
+    group = fixed["groups"][0]
+    with paths["prediction"].open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    raw_metadata = json.loads(paths["raw"].with_suffix(".pt.meta.json").read_text(encoding="utf-8"))
+    dataset_info_path = data_root / category / "dataset_info.json"
+    dataset_info = json.loads(dataset_info_path.read_text(encoding="utf-8")) if dataset_info_path.is_file() else {}
+    row = {
+        "category": category, "split": args.split, "pct": percentage,
+        "train_normal_count": len(raw_metadata["image_names"]),
+        "model_seed": args.seed, "split_seed": dataset_info.get("seed"),
+        "protocol_status": dataset_info.get("protocol_status", "dataset_predefined"),
+        "auroc": metrics["image_auroc"], "mean_ms": metrics["mean_inference_ms"],
+        "threshold": fixed["threshold"], "fpr": group["fpr"], "fnr": group["fnr"],
+        "false_alarm": f"{group['false_alarm']}/{group['normal_count']}",
+        "missed": f"{group['missed']}/{group['defect_count']}", "f1": group["f1"],
+        **{f"auroc_{name}": value for name, value in image_auroc_by_defect(rows).items()},
+    }
+    if input_options_changed(args):                       # 기본과 다를 때만 요약 표에 입력 방식 열 추가
+        row["input_mode"], row["input_scale"] = requested_input(args)
+    if rule != "max":                                     # 예전 규칙이 아닐 때만 요약 표에 규칙 열 추가
+        row["threshold_rule"] = threshold_tag(rule, quantile).lstrip("_")   # 예: q95
+    return row
+
+
+def summary_markdown(name, rows):
+    lines = [f"# PatchCore 실험: {name}", "",
+             "고정 임계값 평가입니다. 테스트 정답을 사용한 최적 임계값은 계산하지 않습니다.", ""]
+    for row in rows:
+        lines.append(f"- {row['category']} ({row.get('split', 'unknown')}), "
+                     f"Coreset {float(row['pct']) * 100:g}%, AUROC {float(row['auroc']):.4f}, "
+                     f"FPR {float(row['fpr']):.4f}, FNR {float(row['fnr']):.4f}, "
+                     f"평균 {float(row['mean_ms']):.2f} ms")
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="PatchCore 실행·공통 평가 연결·요약")
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--categories", nargs="+")
+    parser.add_argument("--pcts", nargs="+", type=float, default=[0.01])
+    parser.add_argument("--data-root", type=Path, default=Path("data/raw/mvtec_ad"))
+    parser.add_argument("--split", choices=["validation", "test"], default="validation")
+    parser.add_argument("--projection-dim", type=int, default=128)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--folds", type=int, default=10)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--render-only", action="store_true")
+    parser.add_argument("--plan-only", action="store_true")
+    # 입력 방식: center_crop(기본, 기존과 동일) / full(자르지 않음, 펼친 긴 띠용)
+    parser.add_argument("--input-mode", choices=INPUT_MODES, default=DEFAULT_INPUT_MODE)
+    # full 방식의 크기 배율 (1.0 = 원본 크기 그대로)
+    parser.add_argument("--input-scale", type=float, default=DEFAULT_INPUT_SCALE)
+    # 임계값 규칙: quantile(기본, 95% 분위수) / max(예전 최댓값 규칙 재현)
+    parser.add_argument("--threshold-rule", choices=THRESHOLD_RULES, default=DEFAULT_THRESHOLD_RULE)
+    parser.add_argument("--threshold-quantile", type=float, default=DEFAULT_THRESHOLD_QUANTILE)
+    args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
+        parser.error("name은 영문·숫자·밑줄·하이픈만 사용하세요.")
+    try:
+        check_input_options(args.input_mode, args.input_scale)   # 잘못된 조합이면 바로 중단
+        threshold_tag(args.threshold_rule, args.threshold_quantile)  # 잘못된 분위수면 바로 중단
+    except ValueError as error:
+        parser.error(str(error))
+    output = ROOT / "outputs/patchcore/summary" / f"{args.name}.csv"
+    try:
+        if args.render_only:
+            with output.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        else:
+            data_root = (args.data_root if args.data_root.is_absolute() else ROOT / args.data_root).resolve()
+            request = request_manifest(args, data_root)
+            if args.plan_only:
+                print(json.dumps(request, ensure_ascii=False, indent=2))
+                return
+            manifest = output.with_suffix(".run.json")
+            if manifest.exists():
+                if not args.resume or json.loads(manifest.read_text(encoding="utf-8")) != request:
+                    raise ValueError("같은 이름의 실험이 있습니다. 동일 조건은 --resume, 다른 조건은 새 --name을 사용하세요.")
+            elif args.resume:
+                raise ValueError("재개할 실험 기록이 없습니다.")
+            else:
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with manifest.open("x", encoding="utf-8") as handle:
+                    json.dump(request, handle, ensure_ascii=False, indent=2)
+            rows = [run_one(category, pct, args, data_root, request["inputs"][category])
+                    for category in args.categories for pct in args.pcts]
+            keys = list(dict.fromkeys(key for row in rows for key in row))
+            with output.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=keys)
+                writer.writeheader()
+                writer.writerows(rows)
+        markdown = summary_markdown(args.name, rows)
+        output.with_suffix(".md").write_text(markdown, encoding="utf-8")
+    except (ValueError, OSError, KeyError, RuntimeError) as error:
+        parser.error(str(error))
+    print(markdown)
+    print("요약 CSV:", output)
+
+
+if __name__ == "__main__":
+    main()
