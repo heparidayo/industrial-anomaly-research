@@ -11,6 +11,7 @@ __pycache__/
 data/
 outputs/
 checkpoints/
+/EfficientAD_v2/
 
 # 모델 가중치
 *.pth

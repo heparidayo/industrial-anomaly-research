@@ -81,6 +81,8 @@ py -3.11 -m venv .venv
 
 ### 1-4. 로컬 폴더와 데이터 준비
 
+EfficientAD 담당자 구현의 설치·학습·추론 명령과 팀 공통 결과 CSV 형식은 [EfficientAD v2 실행 안내](experiments/efficientad/README_v2.md)에 정리되어 있습니다.
+
 데이터와 결과 폴더(`./data`, `./outputs`)은 github로 전달되지 않으므로 미리 준비해둔 코드로 생성해줍니다.
 
 ```powershell
