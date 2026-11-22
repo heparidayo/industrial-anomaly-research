@@ -12,7 +12,12 @@
                         띠 두께 판정과 같은 불량 52장으로 평가)
   unused            ← 건너뜀
 
-    python scripts/draem/prepare_v2_draem.py --kit-root C:/company_v2_team_kit/data/processed/company
+저장소 전처리(scripts/preprocessing/company, configs/datasets/company_v2*.yaml)를 먼저 실행해
+data/processed/company 에 결과를 만든 뒤:
+
+    python scripts/draem/prepare_v2_draem.py                                   # 고리 (잘라서)
+    python scripts/draem/prepare_v2_draem.py --category company_v2_cam12_polarstrip --no-crop --out data/processed/company_v2_draem_strip
+    python scripts/draem/prepare_v2_draem.py --category company_v2_cam12_polar --no-crop --out data/processed/company_v2_draem_stack
 
 결과: data/processed/company_v2_draem/camera_1, camera_2  (+ split_v2.csv, _check/crops_<camera>.png)
 """
@@ -33,7 +38,8 @@ from prepare_company_plc import crop_square, imread, imwrite  # noqa: E402
 
 def main():
     parser = argparse.ArgumentParser(description="키트 분할 → DRAEM 폴더")
-    parser.add_argument("--kit-root", type=Path, required=True, help="키트의 data/processed/company 폴더")
+    parser.add_argument("--kit-root", type=Path, default=Path("data/processed/company"),
+                        help="저장소 전처리 결과 폴더 (기본: data/processed/company)")
     parser.add_argument("--category", default="company_v2_cam12")
     parser.add_argument("--polar-category", default="company_v2_cam12_polarstrip",
                         help="중심·반지름이 든 polar.csv 가 있는 카테고리")
@@ -43,6 +49,8 @@ def main():
                         help="자르지 않고 그대로 복사 (키트 띠·적층 카테고리용: --category company_v2_cam12_polarstrip 등)")
     args = parser.parse_args()
     out = args.out if args.out.is_absolute() else ROOT / args.out
+    if not args.kit_root.is_absolute():
+        args.kit_root = ROOT / args.kit_root
 
     src = args.kit_root / args.category
     with (src / "split.csv").open(encoding="utf-8-sig") as f:
