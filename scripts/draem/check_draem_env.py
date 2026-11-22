@@ -25,7 +25,7 @@ print(f"torchvision {torchvision.__version__}")
 print(f"numpy       {np.__version__}")
 print(f"opencv      {cv2.__version__}")
 
-from src.models.draem.imgaug_compat import Autocontrast, ia, iaa  # noqa: E402
+from src.models.draem.imgaug_compat import Autocontrast, apply_chain, ia, iaa  # noqa: E402
 
 print(f"imgaug      {ia.__version__}")
 
@@ -52,9 +52,18 @@ for aug in augmenters:
     except Exception as e:  # noqa: BLE001
         failed.append((aug.__class__.__name__, repr(e)))
 
+# 학습 때처럼 2개를 이어서 적용 (앞 augmenter의 출력이 읽기 전용이면 여기서 걸림)
+import itertools  # noqa: E402
+for a, b in itertools.permutations(augmenters, 2):
+    try:
+        out = apply_chain([a, b], img)
+        assert out.shape == img.shape
+    except Exception as e:  # noqa: BLE001
+        failed.append((f"{a.name} → {b.name}", repr(e)))
+
 if failed:
     for name, err in failed:
         print(f"[FAIL] {name}: {err}")
     sys.exit(1)
 
-print(f"augmenter {len(augmenters)}개 동작 확인 — DRAEM 환경 OK")
+print(f"augmenter {len(augmenters)}개 + 연속 적용 {len(augmenters) * (len(augmenters) - 1)}쌍 동작 확인 — DRAEM 환경 OK")

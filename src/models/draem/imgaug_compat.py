@@ -8,7 +8,7 @@ imgaug 0.4.0은 NumPy 2.0에서 제거된 ``np.sctypes`` 등을 import 시점에
 
 DRAEM 코드에서는 imgaug를 직접 import하지 말고 아래처럼 사용하세요.
 
-    from src.models.draem.imgaug_compat import iaa, Autocontrast
+    from src.models.draem.imgaug_compat import iaa, Autocontrast, apply_chain
 """
 
 import warnings
@@ -47,7 +47,8 @@ def _autocontrast_images(images, random_state, parents, hooks):
     result = []
     for image, cutoff in zip(images, cutoffs):
         pil = Image.fromarray(np.ascontiguousarray(image))
-        result.append(np.asarray(ImageOps.autocontrast(pil, cutoff=int(cutoff))))
+        # np.asarray(PIL)은 읽기 전용 → 다음 augmenter가 제자리 수정하면 오류. np.array로 복사
+        result.append(np.array(ImageOps.autocontrast(pil, cutoff=int(cutoff))))
     return result
 # PIL 원래 함수를 직접 호출
 
@@ -56,4 +57,18 @@ def Autocontrast():  # noqa: N802  (imgaug augmenter처럼 쓰도록 대문자 �
     return iaa.Lambda(func_images=_autocontrast_images, name="Autocontrast")
 # 위 함수를 ingaug 변환 형태로 감싸서 원래 쓰던 자리에 그대로 넣을 수 있게 함
 
-__all__ = ["ia", "iaa", "Autocontrast"]
+
+def apply_chain(augmenters, image):
+    """augmenter들을 순서대로 적용. 단계마다 쓰기 가능한 배열로 복사.
+
+    pillike 계열(EnhanceSharpness 등)과 Autocontrast는 PIL에서 돌아온 읽기 전용 배열을
+    내보낼 수 있고, Equalize · Invert · Solarize 등은 입력을 제자리에서 수정합니다.
+    NumPy 2에서는 이 조합이 "assignment destination is read-only" 오류를 내므로
+    iaa.Sequential 대신 이 함수를 씁니다 (적용 순서와 결과는 Sequential과 같음).
+    """
+    for aug in augmenters:
+        image = np.array(aug(image=np.array(image)))
+    return image
+
+
+__all__ = ["ia", "iaa", "Autocontrast", "apply_chain"]
